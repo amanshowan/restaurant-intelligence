@@ -114,7 +114,8 @@ products
 
 orders
   id, source_order_id, source, occurred_at, channel,
-  gross_amount, discount_amount, net_amount, item_count
+  gross_amount, discount_amount, net_amount, item_count,
+  import_batch_id → import_batches (nullable)
   UNIQUE (source, source_order_id)
 
 order_items
@@ -140,9 +141,30 @@ the importer has a bug.
 **Money is stored in integer minor units (pence), not floats.** Floating-point
 arithmetic on currency accumulates rounding errors.
 
+The columns are `INTEGER`, not `BIGINT`, and this is deliberate. A signed
+32-bit integer holds up to ~£21.4m *per row*, against a domain where a single
+order is tens of pounds — several orders of magnitude of headroom. Aggregation
+is unaffected: PostgreSQL's `SUM()` over an `INTEGER` column returns `BIGINT`,
+so totals across years of trade cannot overflow either. `BIGINT` would double
+the storage of every monetary column to buy range that this domain cannot use.
+
 **`channel`** distinguishes in-store / collection / delivery, enabling the
 channel-mix analysis that reflects the real business question of whether
 third-party delivery is worth its commission.
+
+**Deletion semantics are chosen per relationship, not applied uniformly.**
+Each foreign key encodes what the data *means*, so the database refuses
+operations that would silently destroy history:
+
+| Relationship | On delete | Rationale |
+|---|---|---|
+| `order_items.order_id` → `orders` | `CASCADE` | A line item has no meaning without its order. |
+| `order_items.product_id` → `products` | `RESTRICT` | Order items are historical financial records. A product with sales history cannot be deleted; retiring it from the catalogue is a soft-delete. |
+| `orders.import_batch_id` → `import_batches` | `RESTRICT` | An import batch is a lineage/audit record and cannot be removed while orders reference it. |
+
+Rolling back an import is therefore an explicit, ordered operation — delete the
+imported orders, then the batch — rather than an implicit side effect of a
+foreign key. Destructive intent has to be stated.
 
 ---
 
