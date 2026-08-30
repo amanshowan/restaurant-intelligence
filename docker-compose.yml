@@ -63,12 +63,29 @@ services:
       # Driver is psycopg (v3), not psycopg2.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     ports:
-      - "${API_PORT:-8000}:8000"
+      # Bound to 127.0.0.1 on the host, matching the db service. Note this is
+      # a different layer to uvicorn's --host 0.0.0.0: uvicorn must listen on
+      # all interfaces INSIDE the container to be reachable at all, while this
+      # controls which host interface Docker publishes the port on.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       # Bind mount, the opposite tool to the volume above: edits saved on the
       # host appear instantly inside the container, so uvicorn --reload
       # restarts on save with no image rebuild.
       - ./backend:/app
+    healthcheck:
+      # Uses /health (liveness), NOT /health/ready. A container healthcheck
+      # decides whether to restart the container, so wiring it to a
+      # dependency check would restart the API whenever Postgres hiccups.
+      #
+      # localhost is correct here — unlike the DATABASE_URL above, this
+      # request is the container talking to itself.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       db:
         # Waits for the healthcheck to PASS. The bare list form of depends_on

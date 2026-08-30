@@ -15,7 +15,8 @@ WORKDIR /app
 # Copying the whole source first would invalidate the cache on every edit.
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir . \
+    && rm -rf build/ *.egg-info/
 
 # Application code. In development this is overlaid by a bind mount (see
 # docker-compose.yml); baking it in keeps the image self-contained and

@@ -1,0 +1,15 @@
+# Keeps the build context small and prevents host-only files leaking into the
+# image. Critically: .env must never be baked into an image layer.
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.git/
+.DS_Store
