@@ -1,0 +1,84 @@
+# Local development stack: PostgreSQL + the FastAPI backend.
+#
+# Usage:
+#   cp .env.example .env      # once, then adjust if you like
+#   docker compose up         # start everything
+#   docker compose down       # stop, KEEPING database contents
+#   docker compose down -v    # stop and DESTROY database contents
+#
+# There is no `version:` key. It was required by the legacy docker-compose v1
+# and is ignored (with a warning) by modern Compose.
+
+# Fixes the project name. Without this, Compose derives it from the directory
+# name, so a renamed or differently-cloned folder would silently create a
+# separate set of containers and volumes.
+name: restaurant-intelligence
+
+services:
+  db:
+    image: postgres:16-alpine
+    # Pinned to a major version deliberately. `postgres:latest` would let this
+    # machine and a reviewer's machine resolve to different majors, and
+    # PostgreSQL major versions have incompatible on-disk data directories.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Published for developer convenience only (psql, TablePlus, DBeaver).
+      # The api service does NOT need this: containers reach each other over
+      # the private Compose network regardless of what is published here.
+      #
+      # Bound to 127.0.0.1 explicitly. Without a host address Docker binds to
+      # 0.0.0.0 — every interface — which puts the database on the local
+      # network and reachable by anything sharing the café/coworking wifi.
+      # Loopback keeps it reachable from this machine only.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume, not a bind mount. Postgres writes its data here, and the
+      # volume outlives the container — so `docker compose down` stops the
+      # database without erasing it.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # "Running" and "ready" are different states. On first boot Postgres
+      # starts, runs initdb, creates the database and restarts internally —
+      # for several seconds the process exists but refuses connections.
+      # pg_isready reports readiness rather than mere liveness.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    # Built from our own source, not pulled from a registry.
+    build: ./backend
+    # Overrides the image's production CMD for local development. --reload
+    # watches the bind-mounted source below and restarts uvicorn on save;
+    # it is deliberately absent from the image itself.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment:
+      # Host is `db` — the service name, resolved by Compose's built-in DNS.
+      # NOT localhost: inside a container, localhost means that container.
+      # Driver is psycopg (v3), not psycopg2.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Bind mount, the opposite tool to the volume above: edits saved on the
+      # host appear instantly inside the container, so uvicorn --reload
+      # restarts on save with no image rebuild.
+      - ./backend:/app
+    depends_on:
+      db:
+        # Waits for the healthcheck to PASS. The bare list form of depends_on
+        # waits only for the container to START, which races against Postgres
+        # initialisation and fails intermittently — worst of all on a cold
+        # first clone, which is exactly a reviewer's experience.
+        #
+        # This solves startup ordering only. The database can still fail at
+        # runtime; that needs connection retry in the application layer.
+        condition: service_healthy
+
+volumes:
+  postgres_data:

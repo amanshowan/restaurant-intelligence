@@ -1,0 +1,39 @@
+# Dependency declaration for the backend service.
+#
+# This file declares WHICH packages the backend needs and the version ranges
+# that are acceptable. It is not a lock file — see the note in the commit
+# discussion about adding one before deployment (M7).
+
+[project]
+name = "restaurant-intelligence-backend"
+version = "0.1.0"
+description = "Analytics backend for independent hospitality businesses."
+requires-python = ">=3.12"
+
+dependencies = [
+    # Web layer
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+
+    # Persistence. psycopg 3 (not psycopg2) — note the driver name in
+    # DATABASE_URL is 'postgresql+psycopg', not 'postgresql+psycopg2'.
+    "sqlalchemy>=2.0,<3",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+
+    # Validation and configuration
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The backend is an application, not a redistributable library. Application
+# code is run from the working directory (/app in the container), never
+# imported as an installed package, so there is nothing to package here.
+# Declaring zero packages lets `pip install .` resolve dependencies from a
+# copy of this file alone — which is what makes the Docker layer cache work.
+[tool.setuptools]
+packages = []
