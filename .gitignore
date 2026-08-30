@@ -1,0 +1,39 @@
+# ---- Secrets ----------------------------------------------------------------
+# Never commit real credentials. .env.example is committed deliberately so a
+# reviewer can see which variables exist without seeing their values.
+.env
+.env.*
+!.env.example
+
+# ---- Real business data -----------------------------------------------------
+# This repo ingests point-of-sale exports from a real business. Nothing under
+# data/ is committed; the project runs on generated synthetic data instead.
+data/
+*.csv
+*.xlsx
+
+# ---- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Node / Next.js ---------------------------------------------------------
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# ---- Editors and OS ---------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
