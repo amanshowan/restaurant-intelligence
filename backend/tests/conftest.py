@@ -109,3 +109,82 @@ def summary_file(tmp_path: Path):
         )
 
     return _make
+
+
+# --- database fixtures -------------------------------------------------------
+#
+# These run against the real PostgreSQL service from docker-compose. Testing
+# persistence against SQLite would not exercise the constraints that matter:
+# ON DELETE RESTRICT, composite unique constraints and NULL-distinctness all
+# behave differently there, and those are precisely what we rely on.
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
+
+from app.db import engine
+
+
+@pytest.fixture(scope="session")
+def database():
+    """Build the schema by running the MIGRATIONS, not metadata.create_all().
+
+    create_all() would build the schema the models describe, which is not
+    necessarily the schema a deployment actually gets. Running alembic here
+    means the tests exercise exactly what `alembic upgrade head` produces, so a
+    migration that drifts from the models fails the suite rather than passing
+    against a schema that only exists in tests.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    command.upgrade(Config("alembic.ini"), "head")
+    yield engine
+
+
+@pytest.fixture
+def session_factory(database):
+    """A clean set of sales tables for every test."""
+    with database.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE order_items, orders, products, import_files, "
+                "import_batches RESTART IDENTITY CASCADE"
+            )
+        )
+    return sessionmaker(bind=database, autoflush=False, expire_on_commit=False)
+
+
+@pytest.fixture
+def square_files(tmp_path):
+    """Build a complete, self-consistent set of Square export files."""
+
+    def _make(transactions, items, summary=None, label="test-batch"):
+        from app.services.importer import ImportRequest
+
+        tx = write_square_export(
+            tmp_path / f"transactions-{label}.csv", TRANSACTION_COLUMNS, transactions
+        )
+        it = write_square_export(tmp_path / f"items-{label}.csv", ITEM_COLUMNS, items)
+        sm = (
+            write_square_export(
+                tmp_path / f"summary-{label}.csv", SUMMARY_COLUMNS, summary
+            )
+            if summary is not None
+            else None
+        )
+        return ImportRequest(transactions=tx, items=it, summary=sm, label=label)
+
+    return _make
+
+
+def summary_row(**overrides):
+    row = {
+        "Item Name": "Caffe Latte", "Item Variation": "Regular", "SKU": "",
+        "Category": "Speciality Coffee", "Items Sold": "1",
+        "Product Sales": "£3.65", "Items Refunded": "0", "Refunds": "£0.00",
+        "Discounts & Comps": "£0.00", "Net Sales": "£3.65", "Tax": "£0.00",
+        "Gross Sales": "£3.65", "Units Sold": "1",
+    }
+    row.update(overrides)
+    return row

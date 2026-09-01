@@ -44,6 +44,8 @@ class IssueCode(str, Enum):
     UNKNOWN_EVENT_TYPE = "unknown_event_type"
     MISSING_TRANSACTION_ID = "missing_transaction_id"
     ORPHAN_ITEM = "orphan_item"
+    #: The order already exists from an earlier import (overlapping window).
+    DUPLICATE_ORDER = "duplicate_order"
     REFUND_CHANNEL_INHERITED = "refund_channel_inherited"
     REFUND_CHANNEL_DERIVED = "refund_channel_derived"
     REFUND_CHANNEL_UNKNOWN = "refund_channel_unknown"
