@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.imports import router as imports_router
 from app.config import settings
 
 app = FastAPI(
@@ -15,3 +16,4 @@ app = FastAPI(
 )
 
 app.include_router(health_router)
+app.include_router(imports_router)

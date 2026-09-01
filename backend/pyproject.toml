@@ -14,6 +14,9 @@ dependencies = [
     # Web layer
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    # Runtime requirement for multipart/form-data uploads, not a dev tool:
+    # FastAPI raises at import time without it once a route declares File().
+    "python-multipart>=0.0.9",
 
     # Persistence. psycopg 3 (not psycopg2) — note the driver name in
     # DATABASE_URL is 'postgresql+psycopg', not 'postgresql+psycopg2'.
@@ -32,6 +35,8 @@ dependencies = [
 # multi-stage Dockerfile would enforce.
 dev = [
     "pytest>=8.0",
+    # Required by starlette's TestClient.
+    "httpx2>=0.28",
 ]
 
 [build-system]

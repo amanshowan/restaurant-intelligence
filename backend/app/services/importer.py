@@ -167,8 +167,16 @@ class ImportOutcome:
     products_created: int = 0
     products_reused: int = 0
     rows_skipped: int = 0
+    #: Integer pence. Computed regardless of whether reconciliation ran.
+    net_sales_pence: int = 0
     reconciliation: Reconciliation = field(default_factory=Reconciliation)
     issues: list[RowIssue] = field(default_factory=list)
+
+    def issue_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for issue in self.issues:
+            counts[issue.code.value] = counts.get(issue.code.value, 0) + 1
+        return counts
 
 
 class SquareImportService:
@@ -185,11 +193,15 @@ class SquareImportService:
         checksums = {role: file_checksum(path) for role, path in files.items()}
 
         try:
-            parsed = {
-                role: self._adapter.read(path, role) for role, path in files.items()
-            }
             with self._session_factory() as session, session.begin():
+                # Preflight FIRST: a duplicate is decided by checksum alone, so
+                # there is no reason to parse ~10 MB of UTF-16 to find out. It
+                # also keeps the check and the insert in one transaction, so
+                # two concurrent submissions cannot both pass.
                 self._preflight(session, checksums)
+                parsed = {
+                    role: self._adapter.read(path, role) for role, path in files.items()
+                }
                 return self._persist(session, request, files, checksums, parsed)
         except ImportRejected:
             # Preflight rejection: the operation never started, so no batch is
@@ -197,10 +209,12 @@ class SquareImportService:
             raise
         except (SourceError, ImportError_) as exc:
             batch_id = self._record_failure(request, files, checksums, exc)
-            if isinstance(exc, ImportError_):
-                exc.batch_id = batch_id
-                raise
-            raise ImportError_(str(exc), batch_id) from exc
+            # Re-raise the ORIGINAL exception type, annotated with the batch id.
+            # Wrapping it would erase the distinction between "this is not a
+            # Square file" and "this import failed", which callers must map to
+            # different responses.
+            exc.batch_id = batch_id  # type: ignore[attr-defined]
+            raise
 
     # -- preflight ------------------------------------------------------------
 
@@ -304,6 +318,7 @@ class SquareImportService:
             products_created=created,
             products_reused=reused,
             rows_skipped=sum(1 for i in issues if i.severity is Severity.SKIP),
+            net_sales_pence=sum(o.net_amount for o in orders),
             reconciliation=reconciliation,
             issues=issues,
         )
