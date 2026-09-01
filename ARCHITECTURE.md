@@ -266,7 +266,30 @@ transaction ids.
 
 **`channel`** distinguishes in-store / collection / delivery, enabling the
 channel-mix analysis that reflects the real business question of whether
-third-party delivery is worth its commission.
+third-party delivery is worth its commission. Two further values exist because
+the real export required them: `online` for Square Online orders, which carry no
+fulfilment detail and must not be guessed into collection or delivery; and
+`unknown`, used only for a refund whose original payment falls outside the
+extraction window. Preserving such a refund with an honest `unknown` keeps the
+ledger complete; dropping it would lose money from the totals.
+
+**Refunds are normalised in a second pass.** Payments are processed first to
+build a `(source, payment_id) → channel` lookup. A refund's channel is then
+resolved in descending order of evidence:
+
+1. **Inherit** from the payment being reversed, when that payment is in this
+   extraction — the same commercial event, and the payment row carries the real
+   fulfilment detail.
+2. **Derive** from the refund's own `Source` + `Dining Option` via the ordinary
+   mapping. Weaker, because refunds are often rung through the till rather than
+   the original channel, but a refund whose `Source` really is "Deliveroo" *is*
+   delivery, and discarding that evidence would be worse than using it.
+3. **`unknown`** only when neither applies — still preserved, never dropped.
+
+Refunds also bypass the zero-value and unresolved-channel exclusions that apply
+to payments: a refund is a real financial event however its columns read. Square
+reports one August refund with `Net Sales £0.00` and `Total Collected −£50.58`,
+so a value test on net sales alone would silently discard it.
 
 **Deletion semantics are chosen per relationship, not applied uniformly.**
 Each foreign key encodes what the data *means*, so the database refuses

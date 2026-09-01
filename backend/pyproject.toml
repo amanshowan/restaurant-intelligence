@@ -26,6 +26,14 @@ dependencies = [
     "pydantic-settings>=2.6,<3",
 ]
 
+[project.optional-dependencies]
+# Test tooling. Installed into the development image via `pip install .[dev]`;
+# a production build (M7) should install the base dependencies only, which a
+# multi-stage Dockerfile would enforce.
+dev = [
+    "pytest>=8.0",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -37,3 +45,9 @@ build-backend = "setuptools.build_meta"
 # copy of this file alone — which is what makes the Docker layer cache work.
 [tool.setuptools]
 packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import mode "importlib" keeps tests/ from needing __init__.py files while
+# still resolving the `app` package from the working directory.
+addopts = "-q"

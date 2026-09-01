@@ -33,6 +33,15 @@ class Channel(str, Enum):
     # "Eat in, Takeaway" dining option. Adding this member required NO database
     # migration — the §3 varchar decision paying for itself within a week.
     MIXED = "mixed"
+    # Ordered through Square Online with no fulfilment evidence in the export.
+    # Deliberately NOT folded into collection or delivery: the export does not
+    # say which, and guessing would put revenue in the wrong channel-mix bucket.
+    ONLINE = "online"
+    # A financial event whose channel genuinely cannot be established — in
+    # practice a refund whose original payment falls outside the extraction
+    # window. Preferred to dropping the record: losing money from the ledger is
+    # worse than admitting one field is unknown.
+    UNKNOWN = "unknown"
 
 
 class ImportStatus(str, Enum):
