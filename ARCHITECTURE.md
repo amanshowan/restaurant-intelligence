@@ -99,6 +99,13 @@ Trade-off to acknowledge if asked: this moves the guarantee out of the
 database, so a process writing directly to Postgres could insert an invalid
 value. Accepted here because the application is the sole writer.
 
+This decision was vindicated within a week of being made. The first real Square
+export contained 71 orders with a combined "Eat in, Takeaway" dining option,
+requiring a new `mixed` channel value. Adding it cost one line of Python and
+zero migrations. The same export also required two further varchar-backed
+enums (`orders.event_type`, `products.kind`) and one more (`import_files.role`),
+all following the same pattern.
+
 **No authentication in the MVP.** Deliberate scoping decision, not an
 oversight: this is a single-tenant tool, and a generic JWT implementation
 would consume a day of build time while adding little differentiated value.
@@ -110,29 +117,105 @@ Documented under Future Work.
 
 ```
 products
-  id, name, category, created_at
+  id, name, variation, category, kind, created_at
+  UNIQUE (name, variation)
 
 orders
-  id, source_order_id, source, occurred_at, channel,
-  gross_amount, discount_amount, net_amount, item_count,
-  import_batch_id → import_batches (nullable)
+  id, source_order_id, source, occurred_at, channel, event_type,
+  source_payment_id, gross_amount, discount_amount, net_amount,
+  item_count, import_batch_id → import_batches (nullable)
   UNIQUE (source, source_order_id)
+  INDEX (source, source_payment_id)      -- non-unique, see below
 
 order_items
   id, order_id → orders, product_id → products,
   quantity, unit_price, line_total
 
 import_batches
-  id, filename, file_checksum, row_count, status,
-  imported_at, error_log
+  id, label, period_start (date), period_end (date),
+  status, imported_at, error_log
+
+import_files
+  id, import_batch_id → import_batches, role, filename,
+  file_checksum, row_count, rows_imported, rows_skipped
   UNIQUE (file_checksum)
+  UNIQUE (import_batch_id, role)
 ```
 
 ### Design notes
 
-**`import_batches.file_checksum`** makes imports idempotent at the file level.
+**`import_files.file_checksum`** makes imports idempotent at the file level.
 Re-uploading the same export does not double-count revenue. Duplicate ingestion
 is one of the most common real-world data pipeline failures.
+
+**A batch is several files.** A logical Square import is Transactions + Items
+Detail + an optional Items Summary, so file identity was split out of
+`import_batches` into `import_files`. The two tables hold two different
+concerns that were originally conflated: *idempotency is a property of a file;
+reconciliation is a property of a batch.* `UNIQUE (import_batch_id, role)`
+enforces at most one file per role per batch.
+
+The importer **preflights every supplied checksum before creating a batch or
+touching sales data.** If any file has already been ingested, the whole
+operation is rejected up front — so a rejected import cannot leave an orphaned
+batch or a half-written set of orders behind.
+
+**`import_batches.period_start` / `period_end`** state the batch's actual data
+coverage, derived from parsed rows rather than filenames. The first real export
+proved filenames unreliable: the Items Summary was named for a period ending
+2 September while covering the same 1–31 August as its siblings. `label` is a
+human-readable name only, never a source of truth.
+
+They are `DATE` and **inclusive** at both ends — calendar coverage ("1–31
+August"), not instants in time. A coverage period has no meaningful moment or
+UTC offset, so storing it as `TIMESTAMPTZ` would imply a precision it does not
+have and invite pointless timezone conversion. This is a deliberate contrast
+with `orders.occurred_at`, which *is* an instant and is therefore `TIMESTAMPTZ`:
+the distinction is between *when something happened* and *which days a dataset
+covers*.
+
+The bounds are business-local (Europe/London) calendar dates taken from the
+export's own date column, not from UTC-converted timestamps. An order at 00:30
+on 1 August BST is 23:30 on 31 July UTC, so deriving bounds from instants would
+report coverage beginning a day early.
+
+**Querying `orders.occurred_at` for a batch's period.** The period is inclusive
+calendar dates; `occurred_at` is a UTC instant. Bridging the two requires a
+**half-open interval** whose boundaries are interpreted in `Europe/London`
+first and only then converted to UTC:
+
+```
+occurred_at >= local_midnight(period_start)              -- inclusive
+occurred_at <  local_midnight(period_end + 1 day)        -- exclusive
+```
+
+Both properties matter:
+
+*Half-open, not closed.* Comparing `occurred_at <= period_end` coerces the date
+to midnight and silently discards almost the whole final day — a full day of
+revenue lost to an off-by-one that no error message reports.
+
+*Local-then-convert, not a fixed offset.* The UK is UTC+1 in summer and UTC+0 in
+winter, so the same calendar range maps to different instants by season, and a
+range spanning the switch has boundaries with **different** offsets:
+
+| Period | Resolves to |
+|---|---|
+| 1–31 Aug 2026 (BST) | `>= 2026-07-31 23:00Z` … `< 2026-08-31 23:00Z` |
+| 1–31 Jan 2026 (GMT) | `>= 2026-01-01 00:00Z` … `< 2026-02-01 00:00Z` |
+| 1–31 Oct 2026 (BST→GMT) | `>= 2026-09-30 23:00Z` … `< 2026-11-01 00:00Z` |
+
+The October range is 31 days *and one hour* in absolute terms. Any approach
+that adds a constant offset, or treats local dates as if they were UTC, is
+wrong for two of these three cases.
+
+The same rule governs daily and hourly aggregation in §5: grouping must happen
+in `Europe/London`, not UTC, or the peak-hour heatmap shifts by an hour for
+seven months of the year.
+
+**`import_files.rows_imported` / `rows_skipped`** record row accounting.
+Zero-value transactions are excluded from analytical orders, but the exclusion
+is counted rather than silently dropped, with reasons in `error_log`.
 
 **`UNIQUE (source, source_order_id)`** enforces row-level deduplication at the
 database layer rather than in application code — the constraint holds even if
@@ -147,6 +230,39 @@ order is tens of pounds — several orders of magnitude of headroom. Aggregation
 is unaffected: PostgreSQL's `SUM()` over an `INTEGER` column returns `BIGINT`,
 so totals across years of trade cannot overflow either. `BIGINT` would double
 the storage of every monetary column to buy range that this domain cannot use.
+
+**`products` are keyed on `(name, variation)`, not name alone.** Square sells the
+same item at multiple price points — the first export has 133 distinct item
+names but 141 distinct (item, price point) pairs. Keying on name alone would
+merge "Caffe Latte" Regular and Large into a single product at a blended price.
+`variation` is `NOT NULL DEFAULT ''` rather than nullable because PostgreSQL
+treats NULLs as *distinct* under a unique constraint, so a nullable column
+would silently fail to deduplicate the majority of rows, which have no price
+point at all. Category is deliberately excluded from the key: it is
+functionally determined by (name, variation), and including it would fracture a
+product into duplicates if Square recategorised it.
+
+**`products.kind`** separates what is sold from what is operating revenue. Gift
+vouchers are a liability at issuance and become revenue on redemption; counting
+them as menu sales inflates the month and double-counts on redemption. They are
+still ingested so reconciliation against Square's own totals stays exact — this
+field is how analytics excludes them. It also types Square's open-price
+"Custom Amount" line, which is real revenue with no catalogue product.
+
+**`orders.event_type`** distinguishes sales from refunds. Square emits refunds
+as separate rows with their own transaction id and negative amounts. Storing
+them as orders keeps revenue arithmetic correct automatically — sums include
+the negative — while this discriminator keeps order *counts* correct, since
+counts and averages filter on `payment`. A dedicated `refunds` table is
+deferred; `source_payment_id` means it can be built later from data already
+captured rather than re-imported.
+
+**`INDEX (source, source_payment_id)` is composite and deliberately not
+unique.** A payment id is an external identifier scoped to its source system,
+so it is only meaningful alongside `source`; and a refund shares its payment id
+with the payment it reverses, so a unique constraint would reject valid data.
+It is the only link between a refund and its original, which carry *different*
+transaction ids.
 
 **`channel`** distinguishes in-store / collection / delivery, enabling the
 channel-mix analysis that reflects the real business question of whether

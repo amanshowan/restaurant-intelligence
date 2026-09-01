@@ -7,13 +7,14 @@ from sqlalchemy import (
     DateTime,
     Enum as SAEnum,
     ForeignKey,
+    Index,
     String,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
-from app.models.enums import Channel
+from app.models.enums import Channel, OrderEventType
 
 if TYPE_CHECKING:  # pragma: no cover
     from app.models.import_batch import ImportBatch
@@ -26,6 +27,11 @@ class Order(Base):
         # Row-level deduplication enforced by the database, not by importer
         # code (§4) — the constraint holds even if the importer has a bug.
         UniqueConstraint("source", "source_order_id", name="uq_orders_source_order"),
+        # Composite and deliberately NOT unique. A payment id is an external
+        # identifier scoped to its source system, so it is only meaningful
+        # alongside `source`; and a refund shares its payment id with the
+        # payment it reverses, so uniqueness would reject valid data.
+        Index("ix_orders_source_payment_id", "source", "source_payment_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -52,6 +58,30 @@ class Order(Base):
         ),
         nullable=False,
     )
+
+    # Sale or refund. Square emits refunds as separate rows with their own
+    # Transaction ID and negative amounts. Keeping them as orders makes revenue
+    # arithmetic correct automatically (sums include the negative); this
+    # discriminator is what keeps order COUNTS correct — counts and averages
+    # filter on PAYMENT so refunds never inflate them.
+    event_type: Mapped[OrderEventType] = mapped_column(
+        SAEnum(
+            OrderEventType,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=False,
+        server_default=OrderEventType.PAYMENT.value,
+        default=OrderEventType.PAYMENT,
+    )
+
+    # Square's "Payment ID" — the only field linking a refund to the payment it
+    # reverses (they have DIFFERENT Transaction IDs). Storing it preserves that
+    # link without a refunds table, and means a future refunds model can be
+    # built from data already captured rather than re-imported.
+    source_payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Money in integer minor units (pence), never floats (§4). Float
     # arithmetic on currency accumulates rounding error.

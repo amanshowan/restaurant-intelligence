@@ -29,6 +29,10 @@ class Channel(str, Enum):
     IN_STORE = "in_store"
     COLLECTION = "collection"
     DELIVERY = "delivery"
+    # Added after the first real Square export: 71 orders carried a combined
+    # "Eat in, Takeaway" dining option. Adding this member required NO database
+    # migration — the §3 varchar decision paying for itself within a week.
+    MIXED = "mixed"
 
 
 class ImportStatus(str, Enum):
@@ -43,3 +47,45 @@ class ImportStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class OrderEventType(str, Enum):
+    """Whether an order row is a sale or a refund.
+
+    Square emits refunds as separate rows with their own Transaction ID and a
+    negative amount. Storing them as orders keeps revenue arithmetic correct
+    (sums include the negative), while this discriminator keeps order COUNTS
+    correct — every count and average filters on PAYMENT.
+    """
+
+    PAYMENT = "payment"
+    REFUND = "refund"
+
+
+class ProductKind(str, Enum):
+    """What a catalogue entry represents commercially.
+
+    Not everything sold through the till is operating revenue. Gift vouchers
+    are a liability at issuance and become revenue on redemption; counting
+    them as menu sales inflates the month and double-counts later. They are
+    still ingested so reconciliation against Square's own totals stays exact —
+    this field is how analytics excludes them.
+    """
+
+    MENU_ITEM = "menu_item"
+    GIFT_VOUCHER = "gift_voucher"
+    # Square's open-price "Custom Amount" line: real revenue, no catalogue item.
+    CUSTOM_AMOUNT = "custom_amount"
+
+
+class ImportFileRole(str, Enum):
+    """Which Square export a file within an import batch is.
+
+    A logical monthly import is Transactions + Items Detail + an optional
+    Items Summary. ITEMS_SUMMARY is reconciliation-only and never populates
+    canonical sales tables.
+    """
+
+    TRANSACTIONS = "transactions"
+    ITEMS_DETAIL = "items_detail"
+    ITEMS_SUMMARY = "items_summary"
