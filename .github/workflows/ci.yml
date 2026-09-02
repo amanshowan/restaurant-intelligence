@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: restaurant
+          POSTGRES_PASSWORD: ci_only
+          POSTGRES_DB: restaurant_intelligence
+        ports:
+          - 5432:5432
+        # Same readiness probe the compose stack uses: "running" and "ready"
+        # are different states for PostgreSQL.
+        options: >-
+          --health-cmd "pg_isready -U restaurant -d restaurant_intelligence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://restaurant:ci_only@localhost:5432/restaurant_intelligence
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[dev]'
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Check models and migrations agree
+        run: alembic check
+
+      - name: Run tests
+        run: python -m pytest
