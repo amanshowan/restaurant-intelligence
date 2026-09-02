@@ -407,6 +407,73 @@ can ask for and the size of the response.
 
 ---
 
+## 5b. Product and basket analytics — M4 semantics
+
+**Grain is `(name, variation)`.** "Caffe Latte / Regular" and "Caffe Latte /
+Large" are different products at different prices and are never merged. The
+first real export had 133 item names but 141 (item, price point) pairs; keying
+on name alone would blend two prices into one meaningless average.
+
+**Discounts are exact, not apportioned.** `order_items.discount_amount` stores
+the per-line value Square reports, so a staff discount on one item of a basket
+stays on that item. An earlier draft apportioned the order total pro-rata by
+line value; measured against August that was exact for only 30% of discount
+value (£231.40 of £767.31), because 26 of 73 discounted orders held more than
+one product. `discount_rate = discount_amount / gross_sales`, null when gross
+is not positive.
+
+**Menu vs non-menu.** Product analytics default to `kind = menu_item`. Gift
+vouchers are a liability at issuance rather than menu revenue, and Square's
+open-price "Custom Amount" line has no menu identity. Both stay in the database
+so imports reconcile against the source, and both are filtered — never deleted.
+August: menu £46,915.91 + vouchers £40.00 + custom £238.17 = £47,194.08 exactly.
+
+**Comparable-period movement** compares a window against the equal-length local
+date range immediately preceding it. A percentage change is reported only when
+the previous period's net sales was positive; growth from zero is undefined,
+not infinite, and is reported as `new_in_period`. A fall to zero from a positive
+base is a well-defined −100% and stays `comparable`.
+
+**Basket association.** Co-occurrence is over DISTINCT `(payment order,
+product)` pairs, so quantity and repeated lines never inflate a count, and
+refunds are excluded — a refund neither creates nor cancels the fact that two
+items were bought together.
+
+```
+support(A,B)    = orders containing both / eligible payment orders
+confidence(A→B) = orders containing both / orders containing A
+lift(A,B)       = support(A,B) / (support(A) × support(B))
+```
+
+Each unordered pair appears once, enforced by a `product_id <` self-join, which
+also makes (A,A) impossible.
+
+**Minimum-pair caution.** Lift is reported alongside the raw pair count because
+a pair seen once can show a lift above 100 — August's unthresholded ranking is
+led by two single-occurrence pairs at lift 100.1 and 90.1. Endpoints take a
+`min_pair_orders` threshold, and no significance testing is claimed.
+
+**Evidence, not recommendations.** `/analytics/menu/evidence` reports what was
+measured. It deliberately contains nothing that says a product should be
+repriced, promoted or removed: those claims need cost, margin and elasticity
+data this system does not hold. Status fields describe arithmetic only
+(`comparable`, `new_in_period`, `increasing`), never a verdict.
+
+**Planner statistics are refreshed after a successful import.** A bulk import
+leaves PostgreSQL with no statistics for the affected tables until autovacuum
+catches up, and in that window the planner falls back to nested loops — the
+basket pair query measured 1,630 ms before `ANALYZE` against 7 ms after. The
+importer therefore runs `ANALYZE` on `orders`, `order_items` and `products`
+once its transaction has committed.
+
+This is housekeeping, not correctness: every figure is identical either way,
+only the plan changes. It runs on the success path only, so a rejected or failed
+import never triggers it, and a failure is logged and swallowed — nothing
+maintenance does may turn a committed business import into a failed one, or
+surface a database error to an API caller.
+
+---
+
 ## 6. Forecasting — evaluation over presentation
 
 The requirement is not "produce a forecast chart". It is **produce a forecast

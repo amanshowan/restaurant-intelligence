@@ -35,7 +35,9 @@ they are auditable but not constraining.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -56,8 +58,11 @@ from app.models import (
 )
 from app.models.enums import ImportFileRole
 from app.schemas.canonical import CanonicalOrder, CanonicalOrderItem
+from app.services.maintenance import refresh_planner_statistics_quietly
 
 CHECKSUM_CHUNK = 1024 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 class ImportError_(Exception):
@@ -179,9 +184,19 @@ class ImportOutcome:
 class SquareImportService:
     """Imports one logical Square export set."""
 
-    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        statistics_refresher: Callable[[], bool] | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._adapter = SquareAdapter()
+        # Injected so tests can observe the orchestration without asserting on
+        # a query plan. Defaults to the real refresh against this session
+        # factory's bind.
+        self._refresh_statistics = statistics_refresher or (
+            lambda: refresh_planner_statistics_quietly(session_factory.kw["bind"])
+        )
 
     # -- public ---------------------------------------------------------------
 
@@ -199,7 +214,7 @@ class SquareImportService:
                 parsed = {
                     role: self._adapter.read(path, role) for role, path in files.items()
                 }
-                return self._persist(session, request, files, checksums, parsed)
+                outcome = self._persist(session, request, files, checksums, parsed)
         except ImportRejected:
             # Preflight rejection: the operation never started, so no batch is
             # created. A FAILED batch means "began processing, then failed".
@@ -212,6 +227,25 @@ class SquareImportService:
             # different responses.
             exc.batch_id = batch_id  # type: ignore[attr-defined]
             raise
+
+        # Only here: the transaction has committed and the import genuinely
+        # succeeded. Statistics maintenance is housekeeping that follows a real
+        # write, so a rejected or failed import never triggers it.
+        #
+        # The try/except is deliberate belt-and-braces. The default refresher
+        # already swallows its own failures, but this guarantee must not depend
+        # on the collaborator being well-behaved: once the transaction has
+        # committed, NOTHING housekeeping does may turn a completed business
+        # import into a failed one, or leak a database error to an API caller.
+        try:
+            self._refresh_statistics()
+        except Exception:  # noqa: BLE001 - see above
+            logger.warning(
+                "planner statistics refresh raised after a successful import; "
+                "the import itself is unaffected",
+                exc_info=True,
+            )
+        return outcome
 
     # -- preflight ------------------------------------------------------------
 

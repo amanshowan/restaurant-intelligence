@@ -295,6 +295,72 @@ class AttachmentAnalysis:
     attachments: list[Attachment]
 
 
+class RevenueDirection(str, Enum):
+    """Sign of the change in net sales. Mechanically factual: it describes the
+    arithmetic, not whether the movement is good."""
+
+    INCREASING = "increasing"
+    DECREASING = "decreasing"
+    UNCHANGED = "unchanged"
+
+
+@dataclass(frozen=True)
+class AttachmentEvidence:
+    """The strongest qualifying co-purchase association for a product."""
+
+    product: ProductRef
+    pair_orders: int
+    attachment_rate_percent: float | None
+    lift: float | None
+
+
+@dataclass(frozen=True)
+class MenuEvidenceRow:
+    """Everything measurable about one product variation, in one row.
+
+    Evidence only. Nothing here says a product should be repriced, promoted or
+    removed — those need cost, margin and elasticity data this system does not
+    hold.
+    """
+
+    product: ProductRef
+    kind: ProductKind
+
+    gross_sales_pence: int
+    discounts_pence: int
+    net_sales_pence: int
+    net_units: int
+    payment_order_count: int
+
+    average_selling_price_pence: int | None
+    #: discount_amount / gross_sales, from exact source line discounts.
+    discount_rate_percent: float | None
+    share_of_menu_net_sales_percent: float | None
+    share_of_menu_units_percent: float | None
+
+    previous_net_sales_pence: int
+    previous_net_units: int
+    net_sales_change_pence: int
+    net_units_change: int
+    net_sales_percent_change: float | None
+    movement_status: MovementStatus
+    revenue_direction: RevenueDirection
+
+    strongest_attachment: AttachmentEvidence | None
+
+
+@dataclass(frozen=True)
+class MenuEvidence:
+    window: QueryWindow
+    previous_window: QueryWindow
+    kinds: tuple[ProductKind, ...]
+    min_pair_orders: int
+    eligible_order_count: int
+    total_net_sales_pence: int
+    total_net_units: int
+    rows: list[MenuEvidenceRow]
+
+
 @dataclass(frozen=True)
 class RevenueSeries:
     window: QueryWindow
@@ -640,6 +706,86 @@ class AnalyticsService:
             attachments=attachments,
         )
 
+    # -- menu evidence --------------------------------------------------------
+
+    def menu_evidence(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        kinds: tuple[ProductKind, ...] = DEFAULT_KINDS,
+        min_pair_orders: int = 5,
+        limit: int | None = None,
+    ) -> MenuEvidence:
+        """Performance, period movement and co-purchase evidence in one view.
+
+        Deliberately NOT implemented as "list products, then per product query
+        its trend and attachments" — that is the N+1 shape this endpoint exists
+        to avoid. It issues a fixed five statements regardless of how many
+        products the catalogue holds:
+
+          1. product totals, current window
+          2. product totals, previous comparable window
+          3. eligible basket order count
+          4. per-product basket order counts
+          5. all qualifying product pairs
+
+        The per-product joining is then a dictionary lookup over a few hundred
+        aggregated rows, not a query per product.
+        """
+        window = build_window(start_date, end_date)
+        prior = previous_window(window)
+
+        with self._session_factory() as session:
+            current = product_queries.fetch_product_totals(session, window, kinds)
+            earlier = {
+                t.product_id: t
+                for t in product_queries.fetch_product_totals(session, prior, kinds)
+            }
+            eligible = basket_queries.fetch_eligible_order_count(
+                session, window, kinds
+            )
+            product_orders = basket_queries.fetch_product_order_counts(
+                session, window, kinds
+            )
+            pairs = basket_queries.fetch_pairs(
+                session, window, kinds, min_pair_orders, product_orders
+            )
+
+        best = _strongest_attachments(pairs, product_orders, eligible)
+
+        total_net = sum(t.net_sales_pence for t in current)
+        total_units = sum(t.net_units for t in current)
+
+        rows = [
+            _evidence_row(
+                totals=t,
+                previous=earlier.get(t.product_id),
+                total_net=total_net,
+                total_units=total_units,
+                attachment=best.get(t.product_id),
+            )
+            for t in current
+        ]
+        rows.sort(
+            key=lambda r: (
+                -r.net_sales_pence, r.product.name, r.product.variation
+            )
+        )
+        if limit is not None:
+            rows = rows[:limit]
+
+        return MenuEvidence(
+            window=window,
+            previous_window=prior,
+            kinds=kinds,
+            min_pair_orders=min_pair_orders,
+            eligible_order_count=eligible,
+            total_net_sales_pence=total_net,
+            total_net_units=total_units,
+            rows=rows,
+        )
+
     def channel_mix(
         self, start_date: date, end_date: date
     ) -> tuple[QueryWindow, list[ChannelShare]]:
@@ -665,3 +811,115 @@ class AnalyticsService:
             )
             for t in totals
         ]
+
+
+def _strongest_attachments(
+    pairs: list[PairCounts], product_orders: dict[int, int], eligible: int
+) -> dict[int, AttachmentEvidence]:
+    """Best qualifying partner for each product, from one pass over the pairs.
+
+    Each unordered pair is considered from both sides, since A's strongest
+    partner and B's need not be each other. "Strongest" is highest lift, with
+    pair count breaking ties — lift measures how much more often two products
+    appear together than independence predicts, which is the association
+    strength; the count is carried alongside so a reader can judge whether the
+    sample supports it.
+    """
+    best: dict[int, AttachmentEvidence] = {}
+
+    def consider(anchor_id: int, partner: ProductRef, pair_orders: int) -> None:
+        anchor_orders = product_orders.get(anchor_id, 0)
+        partner_orders = product_orders.get(partner.product_id, 0)
+        lift = (
+            round(pair_orders * eligible / (anchor_orders * partner_orders), 4)
+            if eligible > 0 and anchor_orders > 0 and partner_orders > 0
+            else None
+        )
+        candidate = AttachmentEvidence(
+            product=partner,
+            pair_orders=pair_orders,
+            attachment_rate_percent=(
+                round(pair_orders * 100 / anchor_orders, 4)
+                if anchor_orders > 0
+                else None
+            ),
+            lift=lift,
+        )
+        incumbent = best.get(anchor_id)
+        if incumbent is None or _attachment_rank(candidate) > _attachment_rank(
+            incumbent
+        ):
+            best[anchor_id] = candidate
+
+    for pair in pairs:
+        consider(pair.a.product_id, pair.b, pair.pair_orders)
+        consider(pair.b.product_id, pair.a, pair.pair_orders)
+    return best
+
+
+def _attachment_rank(a: AttachmentEvidence):
+    # Names invert the tie-break so ordering is deterministic and stable.
+    return (a.lift or 0.0, a.pair_orders, a.product.name, a.product.variation)
+
+
+def _evidence_row(
+    *,
+    totals: ProductTotals,
+    previous: ProductTotals | None,
+    total_net: int,
+    total_units: int,
+    attachment: AttachmentEvidence | None,
+) -> MenuEvidenceRow:
+    previous_net = previous.net_sales_pence if previous else 0
+    previous_units = previous.net_units if previous else 0
+    change = totals.net_sales_pence - previous_net
+
+    if previous_net > 0:
+        status = MovementStatus.COMPARABLE
+        percent = round(change * 100 / previous_net, 2)
+    elif previous_net == 0 and totals.net_sales_pence != 0:
+        status = MovementStatus.NEW_IN_PERIOD
+        percent = None
+    else:
+        status = MovementStatus.NOT_COMPARABLE
+        percent = None
+
+    return MenuEvidenceRow(
+        product=ProductRef(totals.product_id, totals.name, totals.variation),
+        kind=totals.kind,
+        gross_sales_pence=totals.gross_sales_pence,
+        discounts_pence=totals.discounts_pence,
+        net_sales_pence=totals.net_sales_pence,
+        net_units=totals.net_units,
+        payment_order_count=totals.payment_order_count,
+        average_selling_price_pence=totals.average_selling_price_pence,
+        # discount_amount / gross_sales. Null when gross is not positive: a
+        # rate against zero or negative gross would be undefined or misleading.
+        discount_rate_percent=(
+            round(totals.discounts_pence * 100 / totals.gross_sales_pence, 4)
+            if totals.gross_sales_pence > 0
+            else None
+        ),
+        share_of_menu_net_sales_percent=(
+            round(totals.net_sales_pence * 100 / total_net, 4)
+            if total_net > 0
+            else None
+        ),
+        share_of_menu_units_percent=(
+            round(totals.net_units * 100 / total_units, 4)
+            if total_units > 0
+            else None
+        ),
+        previous_net_sales_pence=previous_net,
+        previous_net_units=previous_units,
+        net_sales_change_pence=change,
+        net_units_change=totals.net_units - previous_units,
+        net_sales_percent_change=percent,
+        movement_status=status,
+        revenue_direction=(
+            RevenueDirection.INCREASING if change > 0
+            else RevenueDirection.DECREASING if change < 0
+            else RevenueDirection.UNCHANGED
+        ),
+        strongest_attachment=attachment,
+    )

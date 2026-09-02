@@ -10,9 +10,10 @@ when the real peaks are.
 Built from a real problem: after rolling out Square across a three-floor café,
 the operational data existed but was effectively unusable.
 
-> **Status:** the ingestion pipeline and the core analytics API are complete and
-> covered by tests. The dashboard, forecasting and natural-language query are the
-> next milestones. This README describes only what runs today.
+> **Status:** the ingestion pipeline and the analytics API — revenue, timing,
+> channel, product and basket — are complete and covered by tests. The
+> dashboard, forecasting and natural-language query are the next milestones.
+> This README describes only what runs today.
 
 ---
 
@@ -241,12 +242,18 @@ Five read-only endpoints over the imported data. All are documented in `/docs`.
 | `GET /analytics/day-of-week` | Monday–Sunday totals |
 | `GET /analytics/peak-hours` | 7×24 heatmap grid, plus the busiest cells |
 | `GET /analytics/channels` | In-store vs collection vs delivery vs online mix |
+| `GET /analytics/products` | Performance per product variation |
+| `GET /analytics/products/{id}/trend` | One product over time |
+| `GET /analytics/products/movers` | Movement against the previous comparable period |
+| `GET /analytics/products/{id}/attachments` | What else is in the basket with it |
+| `GET /analytics/baskets/pairs` | Products bought together, with support and lift |
+| `GET /analytics/menu/evidence` | All of the above per product, in one row |
 
 ```bash
 curl "http://localhost:8000/analytics/overview?start_date=2026-08-03&end_date=2026-08-05"
 ```
 
-Four things worth knowing before reading the numbers:
+Five things worth knowing before reading the numbers:
 
 - **Dates are inclusive `Europe/London` calendar dates.** All grouping is in
   business-local time, so a "day" is the trading day, not 00:00–00:00 UTC.
@@ -256,6 +263,15 @@ Four things worth knowing before reading the numbers:
   11:00" means every Sunday in the range, not one date.
 - **Weekly buckets start on Monday**, so the first may be labelled before your
   `start_date` when the range opens mid-week.
+- **Product analytics cover the menu only** by default. Gift vouchers and
+  open-price lines stay in the database so imports reconcile against Square, but
+  they are not menu revenue.
+
+`/analytics/menu/evidence` is a **decision-evidence view, not a recommendation
+engine**: it reports sales, units, exact per-line discounts, movement against
+the previous comparable period, and the strongest co-purchase association. It
+says nothing about pricing or profitability, because the system holds no cost,
+margin or price-elasticity data.
 
 Full metric definitions are in [ARCHITECTURE.md §5a](ARCHITECTURE.md).
 
@@ -283,6 +299,10 @@ on every push and pull request.
 
 ## Not built yet
 
-Product/menu analytics, the Next.js dashboard, demand forecasting and the
-natural-language query interface are planned. Their designs are in
-[ARCHITECTURE.md](ARCHITECTURE.md); none of them exist in the code today.
+The Next.js dashboard, demand forecasting and the natural-language query
+interface are planned. Their designs are in [ARCHITECTURE.md](ARCHITECTURE.md);
+none of them exist in the code today.
+
+Deliberately absent, and not planned without the data to support them: product
+costs, margins, price recommendations and elasticity modelling. The system
+records what was sold, not what it cost.
