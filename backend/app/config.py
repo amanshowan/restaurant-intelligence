@@ -1,5 +1,7 @@
 """Application configuration, loaded from the environment."""
 
+from zoneinfo import ZoneInfo
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,5 +22,15 @@ class Settings(BaseSettings):
     app_name: str = "Restaurant Intelligence API"
     environment: str = "development"
 
+    #: The trading timezone. Every user-facing date, and every daily/hourly
+    #: grouping, is expressed in this zone rather than UTC — a day's takings
+    #: means the business's day, not 00:00-00:00 UTC.
+    business_timezone: str = "Europe/London"
+
 
 settings = Settings()
+
+
+#: Resolved once. Used for local-date <-> UTC-instant conversion everywhere.
+BUSINESS_TZ = ZoneInfo(settings.business_timezone)
+UTC = ZoneInfo("UTC")

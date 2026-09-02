@@ -39,14 +39,13 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.adapters.base import IssueCode, ParseResult, RowIssue, Severity, SourceError
 from app.adapters.parsing import parse_money_to_pence
 from app.adapters.square import SquareAdapter, attach_items
+from app.config import BUSINESS_TZ, UTC
 from app.models import (
     ImportBatch,
     ImportFile,
@@ -58,8 +57,6 @@ from app.models import (
 from app.models.enums import ImportFileRole
 from app.schemas.canonical import CanonicalOrder, CanonicalOrderItem
 
-BUSINESS_TZ = ZoneInfo("Europe/London")
-UTC_TZ = ZoneInfo("UTC")
 CHECKSUM_CHUNK = 1024 * 1024
 
 
@@ -591,7 +588,7 @@ def _incoming_fingerprint(
     order: CanonicalOrder, items: list[CanonicalOrderItem]
 ) -> tuple:
     return (
-        order.occurred_at.astimezone(UTC_TZ),
+        order.occurred_at.astimezone(UTC),
         order.channel,
         order.event_type,
         order.gross_amount,
@@ -608,7 +605,7 @@ def _incoming_fingerprint(
 
 def _persisted_fingerprint(order: Order) -> tuple:
     return (
-        order.occurred_at.astimezone(UTC_TZ),
+        order.occurred_at.astimezone(UTC),
         order.channel,
         order.event_type,
         order.gross_amount,

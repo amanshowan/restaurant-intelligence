@@ -188,3 +188,54 @@ def summary_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+# --- analytics fixtures ------------------------------------------------------
+
+
+@pytest.fixture
+def make_order(session_factory):
+    """Insert an order directly, dated in LOCAL (Europe/London) wall time.
+
+    Bypasses the importer deliberately: these tests are about aggregation and
+    timezone handling, and building fixtures from local wall time is how the
+    boundary cases are actually expressed.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.models import Order
+    from app.models.enums import Channel, OrderEventType
+
+    LONDON = ZoneInfo("Europe/London")
+    counter = {"n": 0}
+
+    def _make(
+        local: str,
+        net: int,
+        *,
+        gross: int | None = None,
+        discount: int = 0,
+        units: int = 1,
+        event_type: OrderEventType = OrderEventType.PAYMENT,
+        channel: Channel = Channel.IN_STORE,
+    ):
+        counter["n"] += 1
+        occurred = datetime.fromisoformat(local).replace(tzinfo=LONDON)
+        with session_factory() as s:
+            s.add(
+                Order(
+                    source="square",
+                    source_order_id=f"TX-{counter['n']:04d}",
+                    occurred_at=occurred,
+                    channel=channel,
+                    event_type=event_type,
+                    gross_amount=net + discount if gross is None else gross,
+                    discount_amount=discount,
+                    net_amount=net,
+                    item_count=units,
+                )
+            )
+            s.commit()
+
+    return _make
