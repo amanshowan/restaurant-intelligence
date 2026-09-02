@@ -23,9 +23,33 @@ output:
      so these stay VARCHAR regardless of future library defaults.
   2. The generated downgrade() re-added filename/file_checksum/row_count as
      NOT NULL with no server default, which fails on any table that already
-     has rows. Server defaults were added so the downgrade is applicable.
-     Note it remains structurally reversible but LOSSY: import_files is
-     dropped, and the per-file detail it held cannot be reconstructed.
+     has rows.
+
+Downgrade fidelity and data loss
+--------------------------------
+The downgrade recovers the restored columns from import_files, which is still
+present at that point, rather than defaulting them. A first attempt at the fix
+used constant server defaults; that made the DDL succeed but gave every row the
+same file_checksum, so recreating UNIQUE (file_checksum) failed on any database
+holding more than one batch. Recovering the real values fixes both.
+
+The downgrade is nonetheless LOSSY, unavoidably so, because the pre-migration
+schema is strictly smaller:
+
+  * A batch with several files collapses to ONE. The transactions export is
+    kept where present, otherwise the lowest-id file; the other files'
+    filename, checksum and row counts are discarded, as the old schema has
+    nowhere to put them.
+  * A batch with NO file rows -- a FAILED batch is recorded without them, by
+    design -- has nothing to recover and receives a synthetic per-row marker,
+    'downgraded-no-source-file-<id>'. It is deliberately not checksum-shaped:
+    it satisfies NOT NULL and UNIQUE without being mistakable for real data.
+  * import_files is dropped entirely, taking rows_imported / rows_skipped and
+    the per-role breakdown with it.
+  * label, period_start and period_end are dropped from import_batches.
+
+Re-upgrading after a downgrade therefore restores the SHAPE of the schema but
+not the discarded rows.
 
 Revision ID: f4fdc42bb63b
 Revises: c52565f1e614
@@ -88,9 +112,57 @@ def downgrade() -> None:
     op.drop_index('ix_orders_source_payment_id', table_name='orders')
     op.drop_column('orders', 'source_payment_id')
     op.drop_column('orders', 'event_type')
-    op.add_column('import_batches', sa.Column('file_checksum', sa.VARCHAR(length=64), server_default='', autoincrement=False, nullable=False))
-    op.add_column('import_batches', sa.Column('row_count', sa.INTEGER(), server_default='0', autoincrement=False, nullable=False))
-    op.add_column('import_batches', sa.Column('filename', sa.VARCHAR(length=255), server_default='', autoincrement=False, nullable=False))
+    # Restore the pre-migration single-file columns on import_batches.
+    #
+    # These are added NULLABLE and without a server default, then backfilled,
+    # then tightened to NOT NULL — which is how the original schema declared
+    # them. Adding them NOT NULL with a constant default instead would give
+    # every row the same file_checksum, and the UNIQUE constraint recreated
+    # below would then fail on any database holding more than one batch.
+    op.add_column('import_batches', sa.Column('file_checksum', sa.VARCHAR(length=64), autoincrement=False, nullable=True))
+    op.add_column('import_batches', sa.Column('row_count', sa.INTEGER(), autoincrement=False, nullable=True))
+    op.add_column('import_batches', sa.Column('filename', sa.VARCHAR(length=255), autoincrement=False, nullable=True))
+
+    # import_files is still present at this point (it is dropped at the end of
+    # this function), so the real per-file values can be recovered rather than
+    # invented. The pre-migration schema held ONE file per batch, so one file
+    # is chosen deterministically: the transactions export where present,
+    # otherwise the lowest id. `false` sorts before `true`, so the comparison
+    # in ORDER BY puts transactions first.
+    op.execute(
+        """
+        UPDATE import_batches AS b
+           SET filename      = f.filename,
+            file_checksum = f.file_checksum,
+            row_count     = f.row_count
+        FROM (
+            SELECT DISTINCT ON (import_batch_id)
+                   import_batch_id, filename, file_checksum, row_count
+            FROM import_files
+            ORDER BY import_batch_id, (role <> 'transactions'), id
+        ) AS f
+        WHERE f.import_batch_id = b.id
+        """
+    )
+
+    # Batches with no file rows at all -- a FAILED batch is recorded without
+    # them, by design -- have nothing to recover. They receive an explicitly
+    # synthetic, per-row unique marker. This is NOT a checksum and is not
+    # presented as one; it exists only to satisfy NOT NULL and UNIQUE while
+    # remaining obviously artificial to anyone who reads it.
+    op.execute(
+        """
+        UPDATE import_batches
+           SET filename      = COALESCE(filename, '(unknown: batch had no file record)'),
+               file_checksum = COALESCE(file_checksum, 'downgraded-no-source-file-' || id),
+               row_count     = COALESCE(row_count, 0)
+         WHERE filename IS NULL OR file_checksum IS NULL OR row_count IS NULL
+        """
+    )
+
+    op.alter_column('import_batches', 'file_checksum', nullable=False)
+    op.alter_column('import_batches', 'row_count', nullable=False)
+    op.alter_column('import_batches', 'filename', nullable=False)
     op.create_unique_constraint(op.f('uq_import_batches_file_checksum'), 'import_batches', ['file_checksum'], postgresql_nulls_not_distinct=False)
     op.drop_column('import_batches', 'period_end')
     op.drop_column('import_batches', 'period_start')
