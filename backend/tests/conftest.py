@@ -239,3 +239,99 @@ def make_order(session_factory):
             s.commit()
 
     return _make
+
+
+@pytest.fixture
+def make_sale(session_factory):
+    """Insert an order with product lines, dated in LOCAL wall time.
+
+    `lines` is a list of (name, variation, quantity, line_total_pence[, kind
+    [, line_discount_pence]]). Products are created on demand and reused by
+    (name, variation).
+
+    `discount` is the ORDER total; when line discounts are not given explicitly
+    it is placed entirely on the first line, so the two stay consistent.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select
+
+    from app.models import Order, OrderItem, Product
+    from app.models.enums import Channel, OrderEventType, ProductKind
+
+    LONDON = ZoneInfo("Europe/London")
+    counter = {"n": 0}
+
+    def _make(
+        local: str,
+        lines,
+        *,
+        discount: int = 0,
+        event_type: OrderEventType = OrderEventType.PAYMENT,
+        channel: Channel = Channel.IN_STORE,
+    ):
+        counter["n"] += 1
+        occurred = datetime.fromisoformat(local).replace(tzinfo=LONDON)
+        with session_factory() as s:
+            gross = sum(line[3] for line in lines)
+            order = Order(
+                source="square",
+                source_order_id=f"SALE-{counter['n']:04d}",
+                occurred_at=occurred,
+                channel=channel,
+                event_type=event_type,
+                gross_amount=gross,
+                discount_amount=discount,
+                net_amount=gross - discount,
+                item_count=sum(line[2] for line in lines),
+            )
+            s.add(order)
+            s.flush()
+            for index, (name, variation, qty, total, *rest) in enumerate(lines):
+                kind = rest[0] if rest else ProductKind.MENU_ITEM
+                if len(rest) > 1:
+                    line_discount = rest[1]
+                else:
+                    line_discount = discount if index == 0 else 0
+                product = s.scalar(
+                    select(Product).where(
+                        Product.name == name, Product.variation == variation
+                    )
+                )
+                if product is None:
+                    product = Product(name=name, variation=variation, kind=kind)
+                    s.add(product)
+                    s.flush()
+                s.add(
+                    OrderItem(
+                        order_id=order.id,
+                        product_id=product.id,
+                        quantity=qty,
+                        unit_price=abs(total) // max(abs(qty), 1),
+                        line_total=total,
+                        discount_amount=line_discount,
+                    )
+                )
+            s.commit()
+            return order.id
+
+    return _make
+
+
+@pytest.fixture
+def product_id(session_factory):
+    """Look up a product id by (name, variation)."""
+    from sqlalchemy import select
+
+    from app.models import Product
+
+    def _lookup(name: str, variation: str = "") -> int:
+        with session_factory() as s:
+            return s.scalar(
+                select(Product.id).where(
+                    Product.name == name, Product.variation == variation
+                )
+            )
+
+    return _lookup

@@ -35,7 +35,18 @@ class OrderItem(Base):
 
     # Integer pence, as with Order (§4).
     unit_price: Mapped[int] = mapped_column(nullable=False)
+    #: Pre-discount value of the line, as the source reports it.
     line_total: Mapped[int] = mapped_column(nullable=False)
+
+    #: Discount applied to THIS line, taken from the source rather than
+    #: apportioned from the order total. Square's Items Detail export supplies
+    #: it per line, so attributing a single-item staff discount to the item it
+    #: was actually applied to is a matter of storing what we were given.
+    #:
+    #: Sign convention matches line_total: positive on a payment line,
+    #: negative on a refund line, so `line_total - discount_amount` is the
+    #: net contribution of the line in both directions.
+    discount_amount: Mapped[int] = mapped_column(nullable=False, default=0)
 
     order: Mapped["Order"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship(back_populates="order_items")

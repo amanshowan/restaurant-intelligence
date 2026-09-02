@@ -344,7 +344,12 @@ class SquareAdapter(SourceAdapter):
 
             try:
                 net = parse_money_to_pence(row.net_sales)
-                discount = abs(parse_money_to_pence(row.discounts))
+                # Negated, not abs(): same reasoning as the line-level discount
+                # above. abs() would report a positive discount on a refund
+                # that reverses a discounted sale, breaking
+                # gross = net + discount for that row. Identical for every
+                # payment, so no existing figure changes.
+                discount = -parse_money_to_pence(row.discounts)
             except MoneyParseError as exc:
                 result.issues.append(
                     RowIssue(number, IssueCode.UNPARSABLE_MONEY, Severity.SKIP,
@@ -492,10 +497,18 @@ class SquareAdapter(SourceAdapter):
 
             try:
                 line_total = parse_money_to_pence(row.product_sales)
+                # Square writes discounts NEGATIVE, the same convention as its
+                # Refunds and Items Refunded columns. Negating (rather than
+                # taking the magnitude) keeps the sign aligned with line_total:
+                # a payment line yields a positive discount, a refund line a
+                # negative one, so line_total - discount_amount is the net
+                # contribution in both directions.
+                line_discount = -parse_money_to_pence(row.discounts)
             except MoneyParseError as exc:
                 result.issues.append(
                     RowIssue(number, IssueCode.UNPARSABLE_MONEY, Severity.SKIP,
-                             str(exc), "Product Sales", row.transaction_id)
+                             str(exc), "Product Sales/Discounts",
+                             row.transaction_id)
                 )
                 continue
 
@@ -522,6 +535,7 @@ class SquareAdapter(SourceAdapter):
                     quantity=quantity,
                     unit_price=unit_price_pence(line_total, quantity),
                     line_total=line_total,
+                    discount_amount=line_discount,
                     modifiers=row.modifiers_applied.strip() or None,
                 )
             )

@@ -467,3 +467,78 @@ def test_refund_item_count_is_negative(transactions_file, items_file):
     counts = {o.source_order_id: o.item_count for o in joined}
     assert counts == {"TX-P": 1, "TX-R": -1}
     assert sum(counts.values()) == 0        # net units after a full refund
+
+
+# --- line-level discounts ----------------------------------------------------
+
+
+def test_line_discount_is_read_from_the_source(items_file):
+    """Square writes discounts negative; canonical stores them signed like the
+    line total, so a payment line yields a positive discount."""
+    path = items_file([
+        item_row(**{"Product Sales": "£7.35", "Discounts": "-£3.68",
+                    "Net Sales": "£3.67"})
+    ])
+    (line,) = SquareAdapter().read(path, ITEMS).items
+    assert line.line_total == 735
+    assert line.discount_amount == 368
+    assert line.line_total - line.discount_amount == 367
+
+
+def test_absent_line_discount_is_zero(items_file):
+    path = items_file([item_row(**{"Discounts": "£0.00"})])
+    (line,) = SquareAdapter().read(path, ITEMS).items
+    assert line.discount_amount == 0
+
+
+def test_refund_line_discount_is_negative(items_file):
+    """Reversing a discounted sale reverses its discount too, so the sign
+    matches the negative line total."""
+    path = items_file([
+        item_row(**{"Qty": "-1.0", "Product Sales": "-£7.35",
+                    "Discounts": "£3.68"})
+    ])
+    (line,) = SquareAdapter().read(path, ITEMS).items
+    assert line.line_total == -735
+    assert line.discount_amount == -368
+    assert line.line_total - line.discount_amount == -367
+
+
+def test_discounts_differ_per_line_within_one_order(items_file):
+    """The case apportioning could not represent."""
+    path = items_file([
+        item_row(**{"Item": "Discounted", "Product Sales": "£5.00",
+                    "Discounts": "-£2.50"}),
+        item_row(**{"Item": "Full Price", "Product Sales": "£5.00",
+                    "Discounts": "£0.00"}),
+    ])
+    lines = {line.product.name: line for line in
+             SquareAdapter().read(path, ITEMS).items}
+    assert lines["Discounted"].discount_amount == 250
+    assert lines["Full Price"].discount_amount == 0
+
+
+def test_unparsable_line_discount_skips_the_row(items_file):
+    path = items_file([item_row(**{"Discounts": "not money"})])
+    result = SquareAdapter().read(path, ITEMS)
+    assert result.items == []
+    assert IssueCode.UNPARSABLE_MONEY in codes(result)
+
+
+def test_order_level_discount_sign_matches_line_level(transactions_file):
+    """abs() would have reported a POSITIVE discount on a refund reversing a
+    discounted sale, breaking gross = net + discount for that row."""
+    path = transactions_file([
+        transaction_row(**{"Transaction ID": "TX-P", "Payment ID": "PAY-1",
+                           "Gross Sales": "£3.67", "Discounts": "-£3.68",
+                           "Net Sales": "£3.67"}),
+        transaction_row(**{"Transaction ID": "TX-R", "Payment ID": "PAY-1",
+                           "Event Type": "Refund", "Dining Option": "",
+                           "Gross Sales": "-£3.67", "Discounts": "£3.68",
+                           "Net Sales": "-£3.67"}),
+    ])
+    orders = {o.source_order_id: o for o in SquareAdapter().read(path, TX).orders}
+    assert orders["TX-P"].discount_amount == 368
+    assert orders["TX-R"].discount_amount == -368
+    for order in orders.values():
+        assert order.gross_amount - order.discount_amount == order.net_amount

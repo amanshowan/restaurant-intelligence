@@ -39,6 +39,8 @@ class CanonicalOrderItem(BaseModel):
     #: Integer pence. `line_total` is authoritative; `unit_price` is derived.
     unit_price: int
     line_total: int
+    #: Discount on this line, from the source. Signed like `line_total`.
+    discount_amount: int = 0
     #: Free-text modifier list, retained because it is the only thing that
     #: distinguishes two otherwise identical lines on the same order.
     modifiers: str | None = None

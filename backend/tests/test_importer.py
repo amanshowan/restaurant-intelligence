@@ -556,3 +556,64 @@ def test_skipped_rows_are_counted_on_the_import_file(session_factory, square_fil
         batch = s.get(ImportBatch, outcome.batch_id)
         assert "zero_value_transaction" in batch.error_log
         assert "unresolved_channel" in batch.error_log
+
+
+def test_importer_persists_line_level_discounts(session_factory, square_files):
+    """The source value reaches the database unchanged, per line."""
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-D", "Payment ID": "PAY-D",
+                               "Gross Sales": "£7.50", "Discounts": "-£2.50",
+                               "Net Sales": "£7.50"})
+        ],
+        items=[
+            item_row(**{"Transaction ID": "TX-D", "Item": "Discounted",
+                        "Product Sales": "£5.00", "Discounts": "-£2.50"}),
+            item_row(**{"Transaction ID": "TX-D", "Item": "Full Price",
+                        "Product Sales": "£5.00", "Discounts": "£0.00"}),
+        ],
+    )
+    SquareImportService(session_factory).run(request)
+
+    with session_factory() as s:
+        rows = {
+            item.product.name: item
+            for item in s.scalars(select(OrderItem)).all()
+        }
+        assert rows["Discounted"].discount_amount == 250
+        assert rows["Full Price"].discount_amount == 0
+        # The whole order's discount is accounted for, without apportionment.
+        assert sum(r.discount_amount for r in rows.values()) == 250
+
+
+def test_line_discount_difference_is_a_conflicting_order(
+    session_factory, square_files
+):
+    """Two exports agreeing on totals but disagreeing on which line was
+    discounted is a genuine conflict, not a safe duplicate."""
+    service = SquareImportService(session_factory)
+    base_tx = transaction_row(**{"Transaction ID": "TX-D", "Payment ID": "PAY-D",
+                                 "Gross Sales": "£7.50", "Discounts": "-£2.50",
+                                 "Net Sales": "£7.50"})
+    service.run(square_files(
+        transactions=[base_tx],
+        items=[
+            item_row(**{"Transaction ID": "TX-D", "Item": "A",
+                        "Product Sales": "£5.00", "Discounts": "-£2.50"}),
+            item_row(**{"Transaction ID": "TX-D", "Item": "B",
+                        "Product Sales": "£5.00", "Discounts": "£0.00"}),
+        ],
+        label="first",
+    ))
+
+    with pytest.raises(ConflictingOrderError, match="line_items"):
+        service.run(square_files(
+            transactions=[{**base_tx, "Customer Name": "re-export"}],
+            items=[
+                item_row(**{"Transaction ID": "TX-D", "Item": "A",
+                            "Product Sales": "£5.00", "Discounts": "£0.00"}),
+                item_row(**{"Transaction ID": "TX-D", "Item": "B",
+                            "Product Sales": "£5.00", "Discounts": "-£2.50"}),
+            ],
+            label="second",
+        ))

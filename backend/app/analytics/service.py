@@ -6,8 +6,11 @@ date/timezone rules live in one testable place.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
+from enum import Enum
+from typing import Literal
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -21,12 +24,15 @@ from app.analytics.queries import (
     WeekdayTotals,
 )
 from app.models.enums import Channel
+from app.analytics import products as product_queries
+from app.analytics.products import DEFAULT_KINDS, ProductBucket, ProductTotals
 from app.analytics.windows import (
     QueryWindow,
     build_window,
     day_buckets,
     week_buckets,
 )
+from app.models.enums import ProductKind
 
 
 #: ISO-8601 weekday numbering, Monday first. Fixed order, always all seven.
@@ -64,6 +70,112 @@ class PeakHourGrid:
 
 def _percent(part: int, whole: int) -> float:
     return round(part * 100 / whole, 2)
+
+
+ProductSort = Literal["net_sales", "gross_sales", "net_units", "discounts"]
+
+_SORT_KEYS: dict[ProductSort, Callable[[ProductTotals], int]] = {
+    "net_sales": lambda p: p.net_sales_pence,
+    "gross_sales": lambda p: p.gross_sales_pence,
+    "net_units": lambda p: p.net_units,
+    "discounts": lambda p: p.discounts_pence,
+}
+
+
+class MovementStatus(str, Enum):
+    """Why a percentage change is or is not defined.
+
+    Describes the arithmetic, not the business. Nothing here says a product is
+    performing well or badly — that judgement needs cost data we do not hold.
+    """
+
+    #: Previous period was positive, so a percentage change is meaningful.
+    #: This includes a fall to zero, which is a well-defined -100%.
+    COMPARABLE = "comparable"
+    #: Nothing in the previous period, something in this one. No percentage:
+    #: growth from zero is not infinite, it is undefined.
+    NEW_IN_PERIOD = "new_in_period"
+    #: Previous total was zero or negative, so there is no base to divide by.
+    NOT_COMPARABLE = "not_comparable"
+
+
+@dataclass(frozen=True)
+class ProductShare:
+    totals: ProductTotals
+    share_of_net_sales_percent: float | None
+    share_of_units_percent: float | None
+
+
+@dataclass(frozen=True)
+class ProductRanking:
+    window: QueryWindow
+    kinds: tuple[ProductKind, ...]
+    sort: ProductSort
+    products: list[ProductShare]
+    total_net_sales_pence: int
+    total_net_units: int
+
+
+@dataclass(frozen=True)
+class ProductTrend:
+    window: QueryWindow
+    granularity: Granularity
+    product: ProductTotals
+    buckets: list[ProductBucket]
+
+
+@dataclass(frozen=True)
+class ProductMovement:
+    product_id: int
+    name: str
+    variation: str
+    kind: ProductKind
+    current_net_sales_pence: int
+    previous_net_sales_pence: int
+    current_net_units: int
+    previous_net_units: int
+    status: MovementStatus
+
+    @property
+    def net_sales_change_pence(self) -> int:
+        return self.current_net_sales_pence - self.previous_net_sales_pence
+
+    @property
+    def net_units_change(self) -> int:
+        return self.current_net_units - self.previous_net_units
+
+    @property
+    def net_sales_percent_change(self) -> float | None:
+        """None unless the previous period was positive.
+
+        A product with no previous sales has not grown by infinity, and one
+        with a negative previous total (refunds only) has no sensible base.
+        """
+        if self.status is not MovementStatus.COMPARABLE:
+            return None
+        return round(
+            self.net_sales_change_pence * 100 / self.previous_net_sales_pence, 2
+        )
+
+
+@dataclass(frozen=True)
+class ProductMovers:
+    window: QueryWindow
+    previous_window: QueryWindow
+    kinds: tuple[ProductKind, ...]
+    movements: list[ProductMovement]
+
+
+def previous_window(window: QueryWindow) -> QueryWindow:
+    """The equal-length local date range immediately preceding `window`.
+
+    17 requested days compare against the 17 days that ended the day before the
+    range opened. Calendar days, not a fixed number of hours, so a comparison
+    spanning a DST change still lines up day-for-day.
+    """
+    length = window.days
+    end = window.start_date - timedelta(days=1)
+    return build_window(end - timedelta(days=length - 1), end)
 
 
 @dataclass(frozen=True)
@@ -130,6 +242,159 @@ class AnalyticsService:
             cells=cells,
             peak_payment_order_count=ranked[0].payment_order_count if ranked else 0,
             busiest=ranked[:busiest_limit],
+        )
+
+    # -- products -------------------------------------------------------------
+
+    def _product_totals(
+        self, window: QueryWindow, kinds: tuple[ProductKind, ...]
+    ) -> list[ProductTotals]:
+        with self._session_factory() as session:
+            return product_queries.fetch_product_totals(session, window, kinds)
+
+    def products(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        kinds: tuple[ProductKind, ...] = DEFAULT_KINDS,
+        sort: ProductSort = "net_sales",
+        limit: int | None = None,
+    ) -> ProductRanking:
+        """Ranked product variations with their share of the filtered set.
+
+        Shares are computed over EVERY matching product before `limit` is
+        applied, so a top-10 list still shows each product's share of the whole
+        menu rather than of the ten shown.
+        """
+        window = build_window(start_date, end_date)
+        totals = self._product_totals(window, kinds)
+
+        total_net = sum(t.net_sales_pence for t in totals)
+        total_units = sum(t.net_units for t in totals)
+
+        ranked = sorted(
+            totals,
+            key=lambda t: (-_SORT_KEYS[sort](t), t.name, t.variation),
+        )
+        if limit is not None:
+            ranked = ranked[:limit]
+
+        return ProductRanking(
+            window=window,
+            kinds=kinds,
+            sort=sort,
+            total_net_sales_pence=total_net,
+            total_net_units=total_units,
+            products=[
+                ProductShare(
+                    totals=t,
+                    share_of_net_sales_percent=(
+                        _percent(t.net_sales_pence, total_net) if total_net > 0 else None
+                    ),
+                    share_of_units_percent=(
+                        _percent(t.net_units, total_units) if total_units > 0 else None
+                    ),
+                )
+                for t in ranked
+            ],
+        )
+
+    def product_trend(
+        self,
+        product_id: int,
+        start_date: date,
+        end_date: date,
+        granularity: Granularity,
+    ) -> ProductTrend | None:
+        """None when the product id does not exist, so the route can 404."""
+        window = build_window(start_date, end_date)
+        with self._session_factory() as session:
+            product = product_queries.product_exists(session, product_id)
+            if product is None:
+                return None
+            found = product_queries.fetch_product_trend(
+                session, window, product_id, granularity
+            )
+
+        scaffold = week_buckets(window) if granularity == "week" else day_buckets(window)
+        buckets = [
+            found.get(b, ProductBucket(period_start=b)) for b in scaffold
+        ]
+        totals = ProductTotals(
+            product_id=product.id,
+            name=product.name,
+            variation=product.variation,
+            kind=product.kind,
+            gross_sales_pence=sum(b.gross_sales_pence for b in buckets),
+            discounts_pence=sum(b.discounts_pence for b in buckets),
+            net_sales_pence=sum(b.net_sales_pence for b in buckets),
+            net_units=sum(b.net_units for b in buckets),
+            payment_order_count=sum(b.payment_order_count for b in buckets),
+        )
+        return ProductTrend(
+            window=window, granularity=granularity, product=totals, buckets=buckets
+        )
+
+    def product_movers(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        kinds: tuple[ProductKind, ...] = DEFAULT_KINDS,
+        limit: int | None = None,
+    ) -> ProductMovers:
+        """Current period against the equal-length period immediately before it.
+
+        Two aggregate queries, one per window, merged by product id. Products
+        present in either period appear, so something that vanished is as
+        visible as something that appeared.
+        """
+        window = build_window(start_date, end_date)
+        prior = previous_window(window)
+
+        current = {t.product_id: t for t in self._product_totals(window, kinds)}
+        earlier = {t.product_id: t for t in self._product_totals(prior, kinds)}
+
+        movements = []
+        for product_id in current.keys() | earlier.keys():
+            now = current.get(product_id)
+            before = earlier.get(product_id)
+            identity = now or before
+            current_net = now.net_sales_pence if now else 0
+            previous_net = before.net_sales_pence if before else 0
+
+            if previous_net > 0:
+                status = MovementStatus.COMPARABLE
+            elif previous_net == 0 and current_net != 0:
+                status = MovementStatus.NEW_IN_PERIOD
+            else:
+                status = MovementStatus.NOT_COMPARABLE
+
+            movements.append(
+                ProductMovement(
+                    product_id=product_id,
+                    name=identity.name,
+                    variation=identity.variation,
+                    kind=identity.kind,
+                    current_net_sales_pence=current_net,
+                    previous_net_sales_pence=previous_net,
+                    current_net_units=now.net_units if now else 0,
+                    previous_net_units=before.net_units if before else 0,
+                    status=status,
+                )
+            )
+
+        # Largest absolute movement first — gains and losses both matter, and
+        # neither is labelled good or bad.
+        movements.sort(
+            key=lambda m: (-abs(m.net_sales_change_pence), m.name, m.variation)
+        )
+        if limit is not None:
+            movements = movements[:limit]
+
+        return ProductMovers(
+            window=window, previous_window=prior, kinds=kinds, movements=movements
         )
 
     def channel_mix(

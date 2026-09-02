@@ -469,6 +469,7 @@ class SquareImportService:
                     quantity=i.quantity,
                     unit_price=i.unit_price,
                     line_total=i.line_total,
+                    discount_amount=i.discount_amount,
                 )
                 for i in items
             ]
@@ -578,10 +579,7 @@ _FINGERPRINT_FIELDS = (
 
 def _line_fingerprint(lines) -> tuple:
     """Order-independent, comparable representation of an order's lines."""
-    return tuple(sorted(
-        (name, variation, quantity, unit_price, line_total)
-        for name, variation, quantity, unit_price, line_total in lines
-    ))
+    return tuple(sorted(lines))
 
 
 def _incoming_fingerprint(
@@ -597,7 +595,8 @@ def _incoming_fingerprint(
         order.item_count,
         order.source_payment_id,
         _line_fingerprint(
-            (i.product.name, i.product.variation, i.quantity, i.unit_price, i.line_total)
+            (i.product.name, i.product.variation, i.quantity, i.unit_price,
+             i.line_total, i.discount_amount)
             for i in items
         ),
     )
@@ -614,7 +613,8 @@ def _persisted_fingerprint(order: Order) -> tuple:
         order.item_count,
         order.source_payment_id,
         _line_fingerprint(
-            (i.product.name, i.product.variation, i.quantity, i.unit_price, i.line_total)
+            (i.product.name, i.product.variation, i.quantity, i.unit_price,
+             i.line_total, i.discount_amount)
             for i in order.items
         ),
     )
