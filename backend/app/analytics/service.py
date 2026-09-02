@@ -24,7 +24,14 @@ from app.analytics.queries import (
     WeekdayTotals,
 )
 from app.models.enums import Channel
+from app.analytics import baskets as basket_queries
 from app.analytics import products as product_queries
+from app.analytics.baskets import (
+    DEFAULT_KINDS as BASKET_DEFAULT_KINDS,
+    AttachmentCounts,
+    PairCounts,
+    ProductRef,
+)
 from app.analytics.products import DEFAULT_KINDS, ProductBucket, ProductTotals
 from app.analytics.windows import (
     QueryWindow,
@@ -70,6 +77,29 @@ class PeakHourGrid:
 
 def _percent(part: int, whole: int) -> float:
     return round(part * 100 / whole, 2)
+
+
+def _pair_sort_key(sort: PairSort):
+    """Descending on the chosen measure, with a deterministic tie-break.
+
+    Names break ties so two runs over the same data return the same order —
+    a chart that reshuffles between refreshes is indistinguishable from one
+    reporting changed data.
+    """
+
+    def key(pair):
+        primary = {
+            "pair_orders": pair.counts.pair_orders,
+            "lift": pair.metrics.lift or 0.0,
+            "support": pair.metrics.support_percent or 0.0,
+        }[sort]
+        return (
+            -primary,
+            pair.counts.a.name, pair.counts.a.variation,
+            pair.counts.b.name, pair.counts.b.variation,
+        )
+
+    return key
 
 
 ProductSort = Literal["net_sales", "gross_sales", "net_units", "discounts"]
@@ -176,6 +206,93 @@ def previous_window(window: QueryWindow) -> QueryWindow:
     length = window.days
     end = window.start_date - timedelta(days=1)
     return build_window(end - timedelta(days=length - 1), end)
+
+
+PairSort = Literal["pair_orders", "lift", "support"]
+
+
+@dataclass(frozen=True)
+class AssociationMetrics:
+    """Association strength between two products, from integer counts.
+
+    Every value is None when its denominator is zero, rather than 0.0 — an
+    undefined ratio and a genuinely zero one mean different things.
+    """
+
+    support_percent: float | None
+    confidence_a_to_b_percent: float | None
+    confidence_b_to_a_percent: float | None
+    lift: float | None
+
+
+def association_metrics(
+    pair_orders: int, a_orders: int, b_orders: int, eligible_orders: int
+) -> AssociationMetrics:
+    support = (
+        round(pair_orders * 100 / eligible_orders, 4)
+        if eligible_orders > 0
+        else None
+    )
+    # lift = support(A,B) / (support(A) * support(B)), which reduces to
+    # (pair * eligible) / (a * b) once the common denominator cancels — so it
+    # is computed from integers, with a single division at the end.
+    lift = (
+        round(pair_orders * eligible_orders / (a_orders * b_orders), 4)
+        if eligible_orders > 0 and a_orders > 0 and b_orders > 0
+        else None
+    )
+    return AssociationMetrics(
+        support_percent=support,
+        confidence_a_to_b_percent=(
+            round(pair_orders * 100 / a_orders, 4) if a_orders > 0 else None
+        ),
+        confidence_b_to_a_percent=(
+            round(pair_orders * 100 / b_orders, 4) if b_orders > 0 else None
+        ),
+        lift=lift,
+    )
+
+
+@dataclass(frozen=True)
+class ProductPair:
+    counts: PairCounts
+    metrics: AssociationMetrics
+
+
+@dataclass(frozen=True)
+class PairAnalysis:
+    window: QueryWindow
+    kinds: tuple[ProductKind, ...]
+    sort: PairSort
+    min_pair_orders: int
+    eligible_order_count: int
+    distinct_product_count: int
+    qualifying_pair_count: int
+    pairs: list[ProductPair]
+
+
+@dataclass(frozen=True)
+class Attachment:
+    product: ProductRef
+    pair_orders: int
+    product_orders: int
+    #: orders containing both / orders containing the anchor
+    attachment_rate_percent: float | None
+    #: orders containing both / orders containing the attached product
+    reverse_attachment_rate_percent: float | None
+    support_percent: float | None
+    lift: float | None
+
+
+@dataclass(frozen=True)
+class AttachmentAnalysis:
+    window: QueryWindow
+    kinds: tuple[ProductKind, ...]
+    anchor: ProductRef
+    anchor_order_count: int
+    eligible_order_count: int
+    min_pair_orders: int
+    attachments: list[Attachment]
 
 
 @dataclass(frozen=True)
@@ -395,6 +512,132 @@ class AnalyticsService:
 
         return ProductMovers(
             window=window, previous_window=prior, kinds=kinds, movements=movements
+        )
+
+    # -- baskets --------------------------------------------------------------
+
+    def product_pairs(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        kinds: tuple[ProductKind, ...] = BASKET_DEFAULT_KINDS,
+        min_pair_orders: int = 1,
+        sort: PairSort = "pair_orders",
+        limit: int | None = None,
+    ) -> PairAnalysis:
+        """Unordered co-purchase pairs with their association metrics."""
+        window = build_window(start_date, end_date)
+        with self._session_factory() as session:
+            eligible = basket_queries.fetch_eligible_order_count(
+                session, window, kinds
+            )
+            product_orders = basket_queries.fetch_product_order_counts(
+                session, window, kinds
+            )
+            counts = basket_queries.fetch_pairs(
+                session, window, kinds, min_pair_orders, product_orders
+            )
+
+        pairs = [
+            ProductPair(
+                counts=c,
+                metrics=association_metrics(
+                    c.pair_orders, c.a_orders, c.b_orders, eligible
+                ),
+            )
+            for c in counts
+        ]
+        pairs.sort(key=_pair_sort_key(sort))
+        qualifying = len(pairs)
+        if limit is not None:
+            pairs = pairs[:limit]
+
+        return PairAnalysis(
+            window=window,
+            kinds=kinds,
+            sort=sort,
+            min_pair_orders=min_pair_orders,
+            eligible_order_count=eligible,
+            distinct_product_count=len(product_orders),
+            qualifying_pair_count=qualifying,
+            pairs=pairs,
+        )
+
+    def product_attachments(
+        self,
+        product_id: int,
+        start_date: date,
+        end_date: date,
+        *,
+        kinds: tuple[ProductKind, ...] = BASKET_DEFAULT_KINDS,
+        min_pair_orders: int = 1,
+        limit: int | None = None,
+    ) -> AttachmentAnalysis | None:
+        """What else was in the basket when this product was bought.
+
+        None when the product id does not exist, so the route can 404.
+        """
+        window = build_window(start_date, end_date)
+        with self._session_factory() as session:
+            product = product_queries.product_exists(session, product_id)
+            if product is None:
+                return None
+            eligible = basket_queries.fetch_eligible_order_count(
+                session, window, kinds
+            )
+            product_orders = basket_queries.fetch_product_order_counts(
+                session, window, kinds
+            )
+            anchor_orders, counts = basket_queries.fetch_attachments(
+                session, window, product_id, kinds, min_pair_orders, product_orders
+            )
+
+        attachments = [
+            Attachment(
+                product=c.product,
+                pair_orders=c.pair_orders,
+                product_orders=c.product_orders,
+                attachment_rate_percent=(
+                    round(c.pair_orders * 100 / anchor_orders, 4)
+                    if anchor_orders > 0
+                    else None
+                ),
+                reverse_attachment_rate_percent=(
+                    round(c.pair_orders * 100 / c.product_orders, 4)
+                    if c.product_orders > 0
+                    else None
+                ),
+                support_percent=(
+                    round(c.pair_orders * 100 / eligible, 4) if eligible > 0 else None
+                ),
+                lift=(
+                    round(
+                        c.pair_orders * eligible / (anchor_orders * c.product_orders),
+                        4,
+                    )
+                    if eligible > 0 and anchor_orders > 0 and c.product_orders > 0
+                    else None
+                ),
+            )
+            for c in counts
+        ]
+        # Most co-occurring first; name and variation break ties so the order
+        # is stable across calls.
+        attachments.sort(
+            key=lambda a: (-a.pair_orders, a.product.name, a.product.variation)
+        )
+        if limit is not None:
+            attachments = attachments[:limit]
+
+        return AttachmentAnalysis(
+            window=window,
+            kinds=kinds,
+            anchor=ProductRef(product.id, product.name, product.variation),
+            anchor_order_count=anchor_orders,
+            eligible_order_count=eligible,
+            min_pair_orders=min_pair_orders,
+            attachments=attachments,
         )
 
     def channel_mix(

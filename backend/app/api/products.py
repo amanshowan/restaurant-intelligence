@@ -16,6 +16,11 @@ from app.analytics.windows import InvalidDateRange
 from app.api.deps import get_analytics_service
 from app.models.enums import ProductKind
 from app.schemas.imports import ErrorResponse
+from app.schemas.baskets import (
+    AttachmentEntry,
+    BasketProduct,
+    ProductAttachmentsResponse,
+)
 from app.schemas.products import (
     ProductListResponse,
     ProductMoversResponse,
@@ -58,8 +63,12 @@ def _guard(call):
         ) from exc
 
 
-def _kinds(selected: list[ProductKind] | None) -> tuple[ProductKind, ...]:
-    return tuple(dict.fromkeys(selected)) if selected else DEFAULT_KINDS
+def _kinds(
+    selected: list[ProductKind] | None,
+    default: tuple[ProductKind, ...] = DEFAULT_KINDS,
+) -> tuple[ProductKind, ...]:
+    """De-duplicated, order-preserving; falls back to the caller's default."""
+    return tuple(dict.fromkeys(selected)) if selected else default
 
 
 def _performance(share) -> ProductPerformance:
@@ -237,5 +246,84 @@ def product_trend(
                 payment_order_count=b.payment_order_count,
             )
             for b in trend.buckets
+        ],
+    )
+
+
+@router.get(
+    "/{product_id}/attachments",
+    response_model=ProductAttachmentsResponse,
+    summary="What else is in the basket with this product",
+    description=(
+        "Products co-occurring with the anchor across payment orders, with "
+        "attachment rate, support and lift.\n\n"
+        "Attachment rate answers \"when someone buys the anchor, how often is "
+        "this also in the order\"; the reverse rate answers the mirror "
+        "question, and is high when the attached product rarely appears "
+        "without the anchor. Evidence only — nothing here is a recommendation."
+    ),
+    responses=ERRORS_WITH_404,
+)
+def product_attachments(
+    product_id: int = Path(..., ge=1, description="Anchor product variation."),
+    start_date: date = Query(..., description=_DATE_HELP),
+    end_date: date = Query(..., description=_DATE_HELP),
+    min_pair_orders: int = Query(
+        1, ge=1,
+        description="Exclude attachments seen fewer times than this. Raise it "
+        "before reading lift, which is unstable on tiny samples.",
+    ),
+    limit: int | None = Query(
+        None, ge=1, le=1000,
+        description="Maximum attached products returned, most co-occurring first.",
+    ),
+    kind: list[ProductKind] | None = Query(None, description=_KIND_HELP),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> ProductAttachmentsResponse:
+    from app.analytics.baskets import DEFAULT_KINDS as BASKET_KINDS
+
+    analysis = _guard(
+        lambda: service.product_attachments(
+            product_id, start_date, end_date,
+            kinds=_kinds(kind, BASKET_KINDS),
+            min_pair_orders=min_pair_orders, limit=limit,
+        )
+    )
+    if analysis is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail={
+                "detail": f"no product with id {product_id}",
+                "code": "product_not_found",
+            },
+        )
+
+    return ProductAttachmentsResponse(
+        start_date=analysis.window.start_date,
+        end_date=analysis.window.end_date,
+        kinds=list(analysis.kinds),
+        min_pair_orders=analysis.min_pair_orders,
+        anchor=BasketProduct(
+            product_id=analysis.anchor.product_id,
+            name=analysis.anchor.name,
+            variation=analysis.anchor.variation,
+        ),
+        anchor_order_count=analysis.anchor_order_count,
+        eligible_order_count=analysis.eligible_order_count,
+        attachments=[
+            AttachmentEntry(
+                product=BasketProduct(
+                    product_id=a.product.product_id,
+                    name=a.product.name,
+                    variation=a.product.variation,
+                ),
+                pair_orders=a.pair_orders,
+                product_orders=a.product_orders,
+                attachment_rate_percent=a.attachment_rate_percent,
+                reverse_attachment_rate_percent=a.reverse_attachment_rate_percent,
+                support_percent=a.support_percent,
+                lift=a.lift,
+            )
+            for a in analysis.attachments
         ],
     )
