@@ -107,7 +107,7 @@ def test_reversed_range_returns_400(client):
         params={"start_date": "2026-08-31", "end_date": "2026-08-01"},
     )
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "invalid_date_range"
+    assert response.json()["code"] == "invalid_date_range"
 
 
 def test_oversized_range_returns_400(client):
@@ -116,7 +116,7 @@ def test_oversized_range_returns_400(client):
         params={"start_date": "2020-01-01", "end_date": "2026-12-31"},
     )
     assert response.status_code == 400
-    assert "exceeds the maximum" in response.json()["detail"]["detail"]
+    assert "exceeds the maximum" in response.json()["detail"]
 
 
 def test_missing_dates_are_rejected(client):
@@ -245,7 +245,7 @@ def test_breakdown_endpoints_reject_reversed_ranges(client, path):
         path, params={"start_date": "2026-08-31", "end_date": "2026-08-01"}
     )
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "invalid_date_range"
+    assert response.json()["code"] == "invalid_date_range"
 
 
 @pytest.mark.parametrize(

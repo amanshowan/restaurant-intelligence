@@ -174,7 +174,7 @@ def test_malformed_encoding_returns_422_with_a_useful_message(client, export_set
         ],
     )
     assert response.status_code == 422
-    detail = response.json()["detail"]
+    detail = response.json()
     assert detail["code"] == "invalid_source_file"
     assert "UTF-16" in detail["detail"]
 
@@ -189,13 +189,13 @@ def test_wrong_file_in_the_transactions_slot_returns_422(client, export_set):
         ],
     )
     assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "invalid_source_file"
+    assert response.json()["code"] == "invalid_source_file"
 
 
 def test_overlong_label_is_rejected(client, export_set):
     response = client.post(ENDPOINT, **upload(export_set(), label="x" * 300))
     assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "invalid_request"
+    assert response.json()["code"] == "invalid_request"
 
 
 # --- conflicts ---------------------------------------------------------------
@@ -209,8 +209,8 @@ def test_duplicate_files_return_409(client, export_set, session_factory):
     response = client.post(ENDPOINT, **upload(paths, label="again"))
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "duplicate_file"
-    assert "already ingested" in response.json()["detail"]["detail"]
+    assert response.json()["code"] == "duplicate_file"
+    assert "already ingested" in response.json()["detail"]
     assert _counts(session_factory) == before          # nothing written, no batch
 
 
@@ -236,7 +236,7 @@ def test_conflicting_order_returns_409(client, export_set, session_factory, tmp_
     response = client.post(ENDPOINT, **upload(conflicting, label="two"))
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "conflicting_order"
+    assert response.json()["code"] == "conflicting_order"
     with session_factory() as s:
         assert s.scalar(select(Order.net_amount)) == 365      # unchanged
 
@@ -251,7 +251,7 @@ def test_reconciliation_failure_returns_422_and_writes_nothing(
     response = client.post(ENDPOINT, **upload(paths))
 
     assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "reconciliation_failed"
+    assert response.json()["code"] == "reconciliation_failed"
     counts = _counts(session_factory)
     assert counts["orders"] == 0 and counts["items"] == 0 and counts["products"] == 0
 
@@ -287,7 +287,7 @@ def test_unexpected_failure_returns_a_safe_500(client, export_set, monkeypatch):
     response = client.post(ENDPOINT, **upload(export_set()))
 
     assert response.status_code == 500
-    body = response.json()["detail"]
+    body = response.json()
     assert body["code"] == "internal_error"
     assert body["detail"] == "An internal error occurred while processing the import."
     assert "password" not in response.text and "10.0.0.5" not in response.text

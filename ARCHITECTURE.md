@@ -330,6 +330,83 @@ a defensible engineering decision.
 
 ---
 
+## 5a. Analytics — metric definitions
+
+Every analytics endpoint slices the same `orders` rows a different way, so the
+definitions below are shared. All five views must reconcile to identical totals
+for a given window; a permanent test asserts exactly that.
+
+| Metric | Definition |
+|---|---|
+| **Net sales** | `SUM(net_amount)` over **all** orders, refunds included as negative amounts. The revenue actually taken. |
+| **Gross sales** | `SUM(gross_amount)` — before discounts. |
+| **Discounts** | `SUM(discount_amount)`, stored positive. `gross − discounts = net` holds at every level of aggregation. |
+| **Payment order count** | Orders with `event_type = 'payment'`. Refunds are excluded. |
+| **Refund event count** | Orders with `event_type = 'refund'`. |
+| **Net units** | `SUM(item_count)`, which is signed — a refunded unit cancels its sale rather than counting twice. |
+| **AOV** | Net sales ÷ payment order count, rounded half away from zero. **0** when there are no paid orders. |
+| **Channel share** | A channel's percentage of paid orders, and of net sales. |
+
+### Semantics that are easy to get wrong
+
+**Refunds reduce financial metrics but are never counted as orders.** A refund
+lowers net sales and net units while leaving the payment order count untouched.
+This is what makes AOV meaningful: dividing revenue that includes refunds by a
+count that includes them too would flatter a bad month twice over. The
+`event_type` discriminator is what allows both to be true at once.
+
+**Business time is `Europe/London`, not UTC.** Every bucket — day, week,
+weekday, hour — is derived from `occurred_at AT TIME ZONE 'Europe/London'`.
+Grouping on UTC would file every order between midnight and 01:00 BST into the
+previous day and shift the whole trading profile an hour for seven months of the
+year. That produces a plausible-looking peak-hour chart that is simply wrong,
+which is worse than an error.
+
+**Inclusive API dates become a half-open UTC window.** `start_date` and
+`end_date` are inclusive local calendar dates. They are converted once, in
+`app/analytics/windows.py`, to:
+
+```
+occurred_at >= local_midnight(start_date)
+occurred_at <  local_midnight(end_date + 1 day)
+```
+
+The filter is applied to the raw `occurred_at` column so it stays sargable and
+can use `ix_orders_occurred_at`; only the *grouping* expression converts to
+local time. Writing the filter itself against a converted column would be
+equivalent in meaning but would force every row to be examined.
+
+**Weekly buckets are Monday-based and may be labelled before `start_date`.**
+Requesting 1–31 August weekly returns a first bucket of 27 July — the Monday of
+the week 1 August falls in, carrying only 1–2 August. A partial week is reported
+under the Monday it belongs to rather than being split or dropped. This matches
+PostgreSQL's `date_trunc('week', …)`, so Python-side scaffolding and SQL-side
+grouping agree.
+
+**Day-of-week and peak-hour results aggregate occurrences, not dates.** A
+weekday row sums *every* Monday in the range into one figure; a peak-hour cell
+is `(weekday, hour)` across the whole window. Neither represents an individual
+calendar date — "Sunday 11:00 = 96 orders" means 96 orders across all the
+Sundays requested.
+
+**Channel percentages are rounded independently and may not total exactly 100.**
+Each share is rounded to two decimal places on its own, so a five-channel month
+can display 100.01% of orders and 99.99% of sales. The underlying values sum
+exactly; a consumer needing a guaranteed 100 should derive the final slice as
+the remainder. A share of net sales is `null` when the period's total is not
+positive — a share of zero is undefined, and a share of a negative total is
+computable but meaningless.
+
+**Empty periods are explicit, not missing.** Daily and weekly series are padded
+so a closed day appears as a zero bucket; day-of-week always returns seven rows;
+peak-hours always returns all 168 cells. A gap and a zero mean different things
+to a chart, and "the shop was shut" should be visible.
+
+**Requests are capped at 366 days**, which bounds both the work a single query
+can ask for and the size of the response.
+
+---
+
 ## 6. Forecasting — evaluation over presentation
 
 The requirement is not "produce a forecast chart". It is **produce a forecast

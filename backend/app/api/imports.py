@@ -150,7 +150,10 @@ def _to_summary(outcome: ImportOutcome) -> ImportSummary:
         413: {"model": ErrorResponse, "description": "Upload too large"},
         422: {
             "model": ErrorResponse,
-            "description": "Not a valid Square export, or reconciliation failed",
+            "description": (
+                "Not a valid Square export, reconciliation failed, or a "
+                "required file was missing from the request"
+            ),
         },
         500: {"model": ErrorResponse, "description": "Unexpected server error"},
     },

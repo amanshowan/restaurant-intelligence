@@ -65,13 +65,27 @@ class ImportSummary(BaseModel):
     reconciliation: ReconciliationResult
 
 
+class ValidationIssue(BaseModel):
+    """One request-validation problem, e.g. a missing or malformed parameter."""
+
+    model_config = ConfigDict(frozen=True)
+
+    location: str = Field(description='Where it occurred, e.g. "query.start_date".')
+    message: str
+    type: str
+
+
 class ErrorResponse(BaseModel):
-    """A safe, client-facing error.
+    """A safe, client-facing error, used by every endpoint.
 
     Carries no stack trace, no SQL and no source-row content.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    detail: str
-    code: str
+    detail: str = Field(description="Human-readable explanation.")
+    code: str = Field(description='Stable machine-readable code, e.g. "duplicate_file".')
+    errors: list[ValidationIssue] | None = Field(
+        default=None,
+        description="Present only for request-validation failures (422).",
+    )

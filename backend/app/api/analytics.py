@@ -34,7 +34,15 @@ _DATE_HELP = (
     "included in full."
 )
 
-BAD_RANGE = {400: {"model": ErrorResponse, "description": "Invalid date range"}}
+#: Applied to every analytics endpoint so the documented error schema matches
+#: what the handlers in app/api/errors.py actually return.
+BAD_RANGE = {
+    400: {"model": ErrorResponse, "description": "Invalid date range"},
+    422: {
+        "model": ErrorResponse,
+        "description": "Missing or malformed query parameter",
+    },
+}
 
 
 def _window_or_400(call):

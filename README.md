@@ -10,9 +10,9 @@ when the real peaks are.
 Built from a real problem: after rolling out Square across a three-floor café,
 the operational data existed but was effectively unusable.
 
-> **Status:** the ingestion pipeline is complete and covered by tests. Analytics
-> endpoints and the dashboard are the next milestones. This README describes
-> only what runs today.
+> **Status:** the ingestion pipeline and the core analytics API are complete and
+> covered by tests. The dashboard, forecasting and natural-language query are the
+> next milestones. This README describes only what runs today.
 
 ---
 
@@ -230,6 +230,35 @@ python3 backend/scripts/generate_demo_data.py
 
 ---
 
+## Analytics
+
+Five read-only endpoints over the imported data. All are documented in `/docs`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /analytics/overview` | Net sales, gross, discounts, order counts, net units, AOV |
+| `GET /analytics/revenue` | Time series, `granularity=day\|week` |
+| `GET /analytics/day-of-week` | Monday–Sunday totals |
+| `GET /analytics/peak-hours` | 7×24 heatmap grid, plus the busiest cells |
+| `GET /analytics/channels` | In-store vs collection vs delivery vs online mix |
+
+```bash
+curl "http://localhost:8000/analytics/overview?start_date=2026-08-03&end_date=2026-08-05"
+```
+
+Four things worth knowing before reading the numbers:
+
+- **Dates are inclusive `Europe/London` calendar dates.** All grouping is in
+  business-local time, so a "day" is the trading day, not 00:00–00:00 UTC.
+- **Refunds reduce net sales but are not counted as orders.** That keeps average
+  order value honest.
+- **Day-of-week and peak-hour figures aggregate across the period** — "Sunday
+  11:00" means every Sunday in the range, not one date.
+- **Weekly buckets start on Monday**, so the first may be labelled before your
+  `start_date` when the range opens mid-week.
+
+Full metric definitions are in [ARCHITECTURE.md §5a](ARCHITECTURE.md).
+
 ## Project layout
 
 ```
@@ -254,6 +283,6 @@ on every push and pull request.
 
 ## Not built yet
 
-Analytics endpoints, the Next.js dashboard, demand forecasting and the
+Product/menu analytics, the Next.js dashboard, demand forecasting and the
 natural-language query interface are planned. Their designs are in
 [ARCHITECTURE.md](ARCHITECTURE.md); none of them exist in the code today.
