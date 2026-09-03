@@ -31,7 +31,7 @@ export function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             // The colour change alone communicates nothing to one.
             aria-current={current ? "page" : undefined}
             className={[
-              "flex items-center justify-between gap-3 rounded-md px-3 py-2",
+              "flex items-center gap-3 rounded-md px-3 py-2",
               "text-sm transition-colors",
               current
                 ? "bg-accent-soft font-semibold text-accent"
@@ -39,11 +39,6 @@ export function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             ].join(" ")}
           >
             <span>{item.label}</span>
-            {!item.implemented && (
-              <span className="text-[10px] font-medium uppercase tracking-wider text-ink-subtle">
-                Soon
-              </span>
-            )}
           </Link>
         );
       })}

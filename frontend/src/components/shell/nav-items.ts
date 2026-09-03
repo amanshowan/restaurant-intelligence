@@ -2,17 +2,15 @@
  * The dashboard's sections, in one place so the desktop sidebar and the mobile
  * drawer cannot drift apart.
  *
- * Only Overview is implemented. The rest are declared now because the shape of
- * the product is part of what this commit establishes — a reviewer should be
- * able to see where the M3/M4 analytics already sitting in the API will land.
+ * Every section listed here is built and reads live data. There is no
+ * "coming soon" state left to model, so the flag that carried one has gone
+ * rather than sitting at `true` on every row.
  */
 export interface NavItem {
   href: string;
   label: string;
   /** Shown under the label in the mobile drawer, and as the link's title. */
   description: string;
-  /** False until the section has real content. Rendered as a subdued marker. */
-  implemented: boolean;
 }
 
 export const NAV_ITEMS: readonly NavItem[] = [
@@ -20,30 +18,25 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/",
     label: "Overview",
     description: "Headline trading figures for a date range",
-    implemented: true,
   },
   {
     href: "/trading",
     label: "Trading",
     description: "Revenue over time, weekday and hourly patterns",
-    implemented: true,
   },
   {
     href: "/products",
     label: "Products",
     description: "Performance, trends and movement by menu item",
-    implemented: true,
   },
   {
     href: "/baskets",
     label: "Basket Analysis",
     description: "What sells alongside what",
-    implemented: true,
   },
   {
     href: "/imports",
     label: "Imports",
     description: "Square export uploads and reconciliation",
-    implemented: false,
   },
 ];

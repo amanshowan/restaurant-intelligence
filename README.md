@@ -10,12 +10,12 @@ when the real peaks are.
 Built from a real problem: after rolling out Square across a three-floor café,
 the operational data existed but was effectively unusable.
 
-> **Status:** the ingestion pipeline and the analytics API — revenue, timing,
-> channel, product and basket — are complete and covered by tests. The
-> dashboard now exists as a Next.js app, with the Overview page reading live
-> figures; its remaining sections are placeholders. Forecasting and
-> natural-language query are the next milestones. This README describes only
-> what runs today.
+> **Status:** complete and covered by tests — the ingestion pipeline, the
+> analytics API, and a Next.js dashboard whose five sections all read live
+> data: headline KPIs, trading analytics, product intelligence, basket
+> analysis, and the Square import workflow. Forecasting and natural-language
+> query are the next milestones and do not exist yet. This README describes
+> only what runs today.
 
 ---
 
@@ -325,6 +325,14 @@ The Next.js app at **<http://localhost:3000>** opens on **Overview**: net sales,
 payment orders, average order value, net units, gross sales and discounts for a
 date range, read live from `/analytics/overview`.
 
+**Imports** is the Square upload workflow: choose a Transactions export and an
+Items Detail export (an Items Summary is optional and turns reconciliation on),
+and the API validates the format, derives the coverage period from the file
+contents and reconciles the result. The page reports what was written — batch,
+period, orders, items, products, skipped rows and the reconciliation table —
+and refuses a duplicate rather than counting an export twice. Nothing is parsed
+in the browser.
+
 **Trading** covers overall trading performance over the same date range —
 revenue over time (daily or weekly), day-of-week totals, a weekday x hour
 heatmap of local trading hours, and the channel mix. Its four sections load
@@ -426,18 +434,29 @@ data/                 real exports go here — gitignored, never committed
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) starts PostgreSQL, runs
-the migrations, checks the models and migrations agree, and runs the test suite
-on every push and pull request.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs two independent
+jobs in parallel on every push and pull request, so a red tick says which half
+broke without opening the log:
+
+| Job | Does |
+|---|---|
+| **Backend** | starts PostgreSQL, runs the migrations, checks the models and migrations agree, runs pytest against the isolated `_test` database |
+| **Frontend** | `npm ci` from the lockfile, Vitest, `tsc --noEmit`, ESLint, production build |
+
+The frontend job uses the runner's own Node rather than the Compose stack.
+Docker is the only prerequisite for *local* development — the point of that
+promise is that a contributor installs nothing — but a CI runner already has a
+Node toolchain, and building an image to reach it would add minutes for no
+extra confidence.
 
 ## Not built yet
 
 Demand forecasting and the natural-language query interface are planned. Their
 designs are in [ARCHITECTURE.md](ARCHITECTURE.md); neither exists in the code
-today.
+today, and nothing in the dashboard predicts, recommends or interprets.
 
-Within the dashboard, Overview, Trading, Products and Basket Analysis read live
-data. Imports is a navigable placeholder that names the endpoint it will read.
+Every section of the dashboard is built and reads live data. There are no
+placeholder pages.
 
 Deliberately absent, and not planned without the data to support them: product
 costs, margins, price recommendations and elasticity modelling. The system

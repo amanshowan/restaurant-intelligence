@@ -5,8 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# Two independent jobs rather than one with two halves. They share nothing —
+# different runtimes, different services, different failure modes — so running
+# them in parallel halves the wall clock and, more usefully, makes a red tick
+# say WHICH half broke without opening the log.
 jobs:
-  test:
+  backend:
+    name: Backend (pytest)
     runs-on: ubuntu-latest
 
     services:
@@ -58,3 +63,54 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  frontend:
+    name: Frontend (vitest, tsc, eslint, build)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node runs natively on the runner rather than through the Compose
+      # stack. Docker is the only prerequisite for LOCAL development — the
+      # point of that promise is that a contributor installs nothing — but CI
+      # already has a Node toolchain, and building an image to reach it would
+      # add minutes for no extra confidence.
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Node major in frontend/Dockerfile. Next.js 16 requires
+          # >= 20.9; pinning the same line here keeps CI and the dev container
+          # from diverging.
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci`, not `npm install`: it installs exactly what the lockfile
+      # pins and fails if the lockfile and package.json disagree, so CI cannot
+      # silently pass against a different dependency tree than a developer has.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Check types
+        run: npm run typecheck
+
+      # A separate step because Next.js 16 removed `next lint` and `next build`
+      # no longer lints — a build passing says nothing about lint.
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+        env:
+          # A production build must compile against React's production runtime.
+          # Building with NODE_ENV=development fails during prerendering with an
+          # unrelated-looking "Cannot read properties of null (reading
+          # 'useContext')".
+          NODE_ENV: production

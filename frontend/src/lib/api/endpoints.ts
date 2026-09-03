@@ -12,6 +12,7 @@ import type {
   ChannelMixResponse,
   DayOfWeekResponse,
   Granularity,
+  ImportSummary,
   LivenessResponse,
   MenuEvidenceResponse,
   OverviewResponse,
@@ -235,5 +236,64 @@ export function getBasketPairs(
       limit,
       kind: kinds,
     },
+  });
+}
+
+
+// --- imports -----------------------------------------------------------------
+
+export interface SquareImportFiles {
+  /** Square Transactions export. Required. */
+  transactions: File;
+  /** Square Items Detail export. Required. */
+  items: File;
+  /** Square Items Summary export. Optional; used only to reconcile. */
+  summary?: File | null;
+  /** Human-readable batch name, e.g. "august-2026". */
+  label?: string;
+}
+
+/**
+ * Builds the multipart body for `POST /imports/square`.
+ *
+ * Field names match the backend's `File(...)` / `Form(...)` parameters exactly.
+ * An absent optional file is OMITTED rather than appended as an empty value:
+ * the handler treats a part with no filename as no file, and sending one
+ * anyway invites it to be spooled as an empty summary and fail reconciliation.
+ *
+ * Exported so the shape of the request can be tested without a network.
+ */
+export function buildSquareImportBody(files: SquareImportFiles): FormData {
+  const form = new FormData();
+  form.append("transactions", files.transactions);
+  form.append("items", files.items);
+  if (files.summary) form.append("summary", files.summary);
+
+  const label = files.label?.trim();
+  if (label) form.append("label", label);
+
+  return form;
+}
+
+/**
+ * `POST /imports/square` — ingest one logical Square export set.
+ *
+ * The browser posts to the same-origin `/api` path and the Next.js rewrite
+ * forwards it to FastAPI, so the upload takes the same route as every other
+ * request and no CORS policy is involved.
+ *
+ * No parsing or validation happens here. Square's format is asserted, the
+ * period derived from file contents and the totals reconciled by the BACKEND;
+ * duplicating any of that in TypeScript would be a second implementation that
+ * could disagree with the one that actually writes the data.
+ */
+export function importSquareExport(
+  files: SquareImportFiles,
+  options?: ApiFetchOptions,
+) {
+  return apiFetch<ImportSummary>("/imports/square", {
+    ...options,
+    method: "POST",
+    body: buildSquareImportBody(files),
   });
 }

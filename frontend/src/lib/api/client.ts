@@ -121,6 +121,13 @@ export function parseErrorBody(body: unknown, status: number): ApiError {
 export interface ApiFetchOptions {
   query?: QueryParams;
   signal?: AbortSignal;
+  /** Defaults to GET. */
+  method?: "GET" | "POST";
+  /**
+   * Request body. Pass a `FormData` for multipart uploads and let the browser
+   * set `Content-Type` itself — see the note in `apiFetch`.
+   */
+  body?: BodyInit;
 }
 
 /**
@@ -140,7 +147,14 @@ export async function apiFetch<T>(
   let response: Response;
   try {
     response = await fetch(url, {
+      method: options.method ?? "GET",
+      body: options.body,
       signal: options.signal,
+      // ONLY Accept. Content-Type is deliberately never set here: for a
+      // multipart upload the browser must generate it, because it carries the
+      // boundary token that separates the parts. Setting
+      // "multipart/form-data" by hand omits the boundary, and the server then
+      // fails to parse a body that looks perfectly valid on the wire.
       headers: { Accept: "application/json" },
       // The dashboard reads live figures; a cached response would show stale
       // takings after an import with no indication that it had.

@@ -427,6 +427,50 @@ export interface MenuEvidenceResponse {
   rows: MenuEvidenceRow[];
 }
 
+// --- imports -----------------------------------------------------------------
+
+/** backend/app/models/enums.py :: ImportStatus */
+export type ImportStatus = "pending" | "processing" | "completed" | "failed";
+
+/** backend/app/schemas/imports.py :: ReconciliationResult */
+export interface ReconciliationResult {
+  /**
+   * FALSE when no Items Summary was supplied. When false, nothing was checked
+   * — `matches` must not be read as a pass, and the UI must not claim a
+   * reconciliation happened.
+   */
+  performed: boolean;
+  matches: boolean;
+  net_sales_pence_ours: number;
+  net_sales_pence_theirs: number;
+  line_totals_pence_ours: number;
+  line_totals_pence_theirs: number;
+  units_ours: number;
+  units_theirs: number;
+}
+
+/** backend/app/schemas/imports.py :: ImportSummary */
+export interface ImportSummary {
+  batch_id: number;
+  status: ImportStatus;
+  label: string | null;
+  /** Derived from the FILE CONTENTS — client filenames are never trusted. */
+  period_start: string | null;
+  period_end: string | null;
+
+  orders_imported: number;
+  order_items_imported: number;
+  products_created: number;
+  products_reused: number;
+
+  rows_skipped: number;
+  /** Row-level outcomes keyed by code, e.g. {"zero_value_transaction": 57}. */
+  issue_counts: Record<string, number>;
+
+  net_sales_pence: number;
+  reconciliation: ReconciliationResult;
+}
+
 /**
  * backend/app/api/errors.py — the single envelope EVERY failure arrives in,
  * including FastAPI's own 422 request validation.
