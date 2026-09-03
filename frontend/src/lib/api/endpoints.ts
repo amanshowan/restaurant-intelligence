@@ -11,6 +11,8 @@ import type { DateRange } from "../date-range";
 import type {
   ChannelMixResponse,
   DayOfWeekResponse,
+  ForecastResponse,
+  ForecastTarget,
   Granularity,
   ImportSummary,
   LivenessResponse,
@@ -236,6 +238,36 @@ export function getBasketPairs(
       limit,
       kind: kinds,
     },
+  });
+}
+
+
+// --- forecasting -------------------------------------------------------------
+
+/**
+ * `GET /analytics/forecast` — the next 1-14 local trading days.
+ *
+ * ONE request returns the WHOLE horizon. The backend reads the series once,
+ * fits once and produces every point from a single recursive pass, so asking
+ * per day would be both slower and wrong — day 8's forecast depends on day 1's
+ * prediction, which a separate request would not carry.
+ *
+ * Unlike the analytics endpoints this takes no date range. The forecast always
+ * starts from the day after the latest imported one, and the response reports
+ * which day that was in `trained_through`.
+ *
+ * `horizonDays` must be 1-14; the server rejects anything else with a 422. The
+ * UI is expected to make an out-of-range value unreachable rather than rely on
+ * that (see `lib/forecast.ts`), but the bound is the server's to enforce.
+ */
+export function getForecast(
+  target: ForecastTarget,
+  horizonDays: number,
+  options?: ApiFetchOptions,
+) {
+  return apiFetch<ForecastResponse>("/analytics/forecast", {
+    ...options,
+    query: { target, horizon_days: horizonDays },
   });
 }
 

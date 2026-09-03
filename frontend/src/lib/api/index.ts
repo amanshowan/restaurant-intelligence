@@ -15,6 +15,7 @@ export {
   getBasketPairs,
   getChannels,
   getDayOfWeek,
+  getForecast,
   getLiveness,
   getMenuEvidence,
   getOverview,

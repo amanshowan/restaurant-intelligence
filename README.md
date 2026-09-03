@@ -11,11 +11,11 @@ Built from a real problem: after rolling out Square across a three-floor café,
 the operational data existed but was effectively unusable.
 
 > **Status:** complete and covered by tests — the ingestion pipeline, the
-> analytics API, and a Next.js dashboard whose five sections all read live
-> data: headline KPIs, trading analytics, product intelligence, basket
-> analysis, and the Square import workflow. Forecasting and natural-language
-> query are the next milestones and do not exist yet. This README describes
-> only what runs today.
+> analytics API, a validated short-horizon demand forecast, and a Next.js
+> dashboard whose six sections all read live data: headline KPIs, trading
+> analytics, product intelligence, basket analysis, the forecast, and the
+> Square import workflow. Natural-language query is the next milestone and does
+> not exist yet. This README describes only what runs today.
 
 ---
 
@@ -45,6 +45,14 @@ no source file.
 **Reconciles against Square's own totals.** When the Items Summary export is
 supplied, imported net sales, line totals and unit counts must match it exactly
 or the import fails. It's an independent check on our arithmetic, not decoration.
+
+**Forecasts the next fortnight, and reports how wrong it usually is.** A ridge
+regression on weekday, lag and holiday features predicts daily net sales,
+orders and units 1–14 days out. It is validated by rolling-origin backtesting
+against a baseline an experienced operator would actually use, and every
+forecast the API returns carries the error that method made on days it had
+never seen. The improvement over the baseline is real but modest, and the
+[Forecasting](#forecasting) section below says so with the numbers.
 
 **Doesn't store personal data.** Customer, card and staff columns are dropped at
 the parsing boundary — the canonical schema has no column to put them in.
@@ -178,6 +186,13 @@ docker compose run --rm --no-deps web npm run typecheck
 docker compose run --rm --no-deps web npm run lint
 ```
 
+Most frontend tests run in Node against `src/lib` — formatting, query
+serialisation, the API client, the forecast presentation rules — because that
+is where a mistake produces a wrong number or a silently malformed request. The
+Forecast page is the exception: what it must never do — present a prediction as
+a record, or a measured error as an accuracy — is a property of the *rendered*
+output, so those tests opt into a DOM.
+
 `next build` no longer runs linting as of Next.js 16, so `lint` is a separate
 step rather than something a build would catch. To verify a full production
 build, build the image's production stage — which compiles with
@@ -277,7 +292,7 @@ python3 backend/scripts/generate_demo_data.py
 
 ## Analytics
 
-Five read-only endpoints over the imported data. All are documented in `/docs`.
+Read-only endpoints over the imported data. All are documented in `/docs`.
 
 | Endpoint | Returns |
 |---|---|
@@ -292,6 +307,7 @@ Five read-only endpoints over the imported data. All are documented in `/docs`.
 | `GET /analytics/products/{id}/attachments` | What else is in the basket with it |
 | `GET /analytics/baskets/pairs` | Products bought together, with support and lift |
 | `GET /analytics/menu/evidence` | All of the above per product, in one row |
+| `GET /analytics/forecast` | Predicted daily net sales, orders or units, 1-14 days ahead |
 
 ```bash
 curl "http://localhost:8000/analytics/overview?start_date=2026-08-03&end_date=2026-08-05"
@@ -318,6 +334,132 @@ says nothing about pricing or profitability, because the system holds no cost,
 margin or price-elasticity data.
 
 Full metric definitions are in [ARCHITECTURE.md §5a](ARCHITECTURE.md).
+
+## Forecasting
+
+`GET /analytics/forecast?target=net_sales&horizon_days=14` predicts the next
+1–14 local trading days from the most recent imported one.
+
+The requirement was never "produce a forecast chart". It was **produce a
+forecast whose quality is honestly measured** — which means a baseline worth
+beating, a validation scheme a live forecast could actually reproduce, and a
+published result even where that result is unflattering.
+
+### The daily series
+
+Forecasting reads the same SQL aggregation the analytics API already uses
+(`analytics.queries.fetch_revenue_series`), so "daily net sales" means exactly
+one thing across the codebase. It inherits grouping on the local
+`Europe/London` trading day, refunds reducing net sales and units, and payment
+orders counted only from payment events. The series is **zero-filled**: a day
+with no trade is an observed zero, not a gap, because a forecaster that treats
+a closure as missing data will cheerfully predict trade on Christmas Day.
+
+### Validation: rolling-origin, and leakage-safe by construction
+
+A random train/test split trains on next Tuesday to predict last Tuesday and
+reports an accuracy the business can never experience. Every fold here trains
+only on the past and is scored only on the future:
+
+```
+|<-------- train ------->|<- test ->|
+|<----------- train ---------->|<- test ->|
+|<--------------- train -------------->|<- test ->|
+```
+
+Over one year of trade that gives **17 folds × a 14-day horizon = 238
+previously unseen forecast days**, pooled into one figure per target.
+
+Two properties are enforced by the code's shape rather than by discipline:
+
+- a forecaster is handed only the training observations and a horizon. It is
+  never given the days it is being scored on, so it cannot consult them;
+- multi-step forecasting is **recursive**. Day 8's `lag_7` feature points at
+  day 1, which is inside the horizon and unknown at forecast time, so it uses
+  the model's own day-1 *prediction*. Reading the actual would produce a
+  backtest score no live forecast could reproduce, and is the single easiest
+  way to fake a good result.
+
+### The baseline is not a strawman
+
+A café's trade is dominated by day of week, and "the same as last week" is what
+an experienced operator actually predicts. Three transparent baselines were
+measured before any model was written; the strongest is the **four-week
+same-weekday mean**.
+
+### Result
+
+Ridge regression on 13 features — six weekday dummies, lags at 7/14/21/28 days,
+trailing 7- and 28-day means, and a fixed-date holiday flag — is the production
+method. Pooled WAPE over all 238 unseen days:
+
+| Method | Net sales | Payment orders | Net units |
+|---|---|---|---|
+| Seasonal naive (last week) | 16.35% | 15.11% | 16.55% |
+| 28-day trailing mean | 20.21% | 14.19% | 18.45% |
+| **Four-week same-weekday mean** (baseline) | 13.22% | 12.47% | 13.02% |
+| **Ridge + holiday flag** (production) | **12.69%** | **11.29%** | **12.35%** |
+| Histogram gradient boosting (rejected) | 14.33% | 13.55% | 14.00% |
+
+**The honest reading:** Ridge beats the strongest baseline on all three
+targets, and the margin is small — 0.53 points on revenue, 1.18 on orders, 0.67
+on units. In money that is a mean absolute error of £179.70 per day against the
+baseline's £187.18. It is a real improvement, consistent across targets and not
+merely an artefact of the festive fortnight, but it is not a transformation,
+and presenting it as one would be the dishonest part.
+
+**The rejected challenger is reported too.** Histogram gradient boosting was
+tested under the identical harness and was worse than Ridge on all three
+targets — and worse than the same-weekday baseline as well. With ~365
+observations and a signal that is close to linear in the features given, a
+model that can carve arbitrary interactions mostly finds noise. A documented
+negative result is worth more than a quietly dropped experiment.
+
+### How error is reported, and what is deliberately absent
+
+Every forecast response carries `historical_wape_percent` and `historical_mae`
+alongside the fold count and horizon they were measured over. Both are
+**errors**, and the dashboard presents them as errors:
+
+```
+Historical WAPE   12.69%
+Across 238 previously unseen forecast days, pooled from 17 rolling-origin
+backtest folds of 14 days each.
+```
+
+Nothing subtracts that from 100. "87.31% accurate" would be a claim about the
+predictions on screen, and the backtest measures something else entirely — how
+wrong this *method* has been on *other* days.
+
+MAPE is absent on purpose: it divides by each day's actual, so one closed day
+makes it undefined and one very quiet day makes it enormous. A café has both.
+
+**There are no prediction intervals.** Producing one would mean validating that
+it contains the outcome as often as it claims, which has not been done — and an
+unchecked range invites more confidence than an honest number. The API returns
+no bounds, and the dashboard invents none.
+
+### Current limitations
+
+- **One year of data.** Twelve months means every seasonal pattern is observed
+  exactly once, so annual seasonality cannot be separated from trend. Month
+  dummies were measured rather than argued about, and left out because they
+  made things worse (13.07% / 11.94% / 12.32% against 12.69% / 11.29% /
+  12.35%): eleven columns describing twelve months seen once each is
+  memorisation. The model choice should be re-evaluated once a second year
+  exists.
+- **Fixed-date holidays only.** 25 December, 26 December and 1 January. Easter
+  and the moveable bank holidays would need a calendar library.
+- **No external features.** No weather, no local events, no school terms — all
+  of which plausibly move a café's covers, and none of which the system holds.
+- **No prediction intervals**, for the reason above.
+- **Fitted per request, not persisted.** There is no model registry and no
+  scheduled retraining; the backtest metrics are memoised per process, which is
+  a cache, not a store.
+- **14 days is the ceiling.** Beyond a fortnight the recursive forecast is
+  predicting almost entirely from its own output, and nothing in the backtest
+  supports it.
+
 
 ## Dashboard
 
@@ -352,7 +494,17 @@ against lift. It opens at a minimum of 20 shared orders rather than the API's
 own default of 1: at 1, a lift-sorted list is led by pairs seen once. The
 threshold is an on-screen control and the response echoes the value applied.
 
-Both pages are **evidence, not recommendation**. Movement is reported
+**Forecast** is the one page that shows numbers for days that have not
+happened, and it is built to be impossible to mistake for the others. A single
+request returns the whole horizon; the measure switcher (net sales, payment
+orders, net units) and the 1–14 day horizon each re-issue exactly one request.
+The line is dashed, every caption reads "predicted", the last day of real data
+is stated at the top, and the historical error sits on the page beside the
+prediction rather than in a footnote — as an error, in £ per day or units per
+day, with the count of unseen days it was measured over. No confidence figure
+and no interval band appear anywhere, because neither has been validated.
+
+Both the Products and Basket pages are **evidence, not recommendation**. Movement is reported
 mechanically — increasing, decreasing, unchanged, new in period, not comparable
 — and a percentage change the backend calls undefined stays undefined. Nothing
 suggests repricing, promoting or removing a product; that would need cost,
@@ -418,6 +570,8 @@ backend/
   app/
     adapters/     Square file reading and normalisation
     services/     import orchestration, persistence, reconciliation
+    analytics/    SQL aggregations behind the analytics endpoints
+    forecasting/  daily series, baselines, features, models, backtest harness
     models/       SQLAlchemy models
     schemas/      Pydantic — external Square shapes vs canonical records
     api/          FastAPI routes
@@ -426,8 +580,9 @@ backend/
 frontend/
   src/
     app/          App Router pages — one per dashboard section
-    components/   shell, page furniture, the Overview dashboard
-    lib/          typed API client, formatting, date-range rules (+ tests)
+    components/   shell, page furniture, one directory per dashboard
+    lib/          typed API client, formatting, date-range and forecast
+                  presentation rules (+ tests)
 demo/square-sample/   synthetic Square exports (safe, committed)
 data/                 real exports go here — gitignored, never committed
 ```
@@ -451,12 +606,17 @@ extra confidence.
 
 ## Not built yet
 
-Demand forecasting and the natural-language query interface are planned. Their
-designs are in [ARCHITECTURE.md](ARCHITECTURE.md); neither exists in the code
-today, and nothing in the dashboard predicts, recommends or interprets.
+The natural-language query interface is planned. Its design is in
+[ARCHITECTURE.md §7](ARCHITECTURE.md); it does not exist in the code today, and
+nothing in the dashboard interprets a question or generates a recommendation.
 
 Every section of the dashboard is built and reads live data. There are no
 placeholder pages.
+
+The forecast is deliberately limited: no prediction intervals, no external
+features, no persisted model or scheduled retraining, and a 14-day ceiling.
+Those limits, and why each is there, are listed under
+[Forecasting](#current-limitations).
 
 Deliberately absent, and not planned without the data to support them: product
 costs, margins, price recommendations and elasticity modelling. The system

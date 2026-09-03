@@ -476,21 +476,188 @@ surface a database error to an API caller.
 
 ## 6. Forecasting — evaluation over presentation
 
-The requirement is not "produce a forecast chart". It is **produce a forecast
-whose quality is honestly measured**.
+**Built.** The requirement was never "produce a forecast chart"; it was
+*produce a forecast whose quality is honestly measured*. What follows is what
+runs, not what was intended.
 
-Required approach:
+### 6a. The canonical daily series
 
-1. **Baseline first** — seasonal naive (this Tuesday ≈ last Tuesday). Any real
-   model must beat this to justify its existence.
-2. **Model** — regression with calendar features (day of week, hour of day,
-   holiday flags), or SARIMA if the series is well-behaved.
-3. **Backtest** — hold out a trailing period; evaluate with MAE and MAPE.
-4. **Report the result honestly** — including if the model fails to beat the
-   baseline. A documented negative result demonstrates more engineering
-   maturity than an unvalidated chart.
+`forecasting/series.py` builds one row per **local calendar day** from the same
+SQL aggregation the analytics API uses (`analytics.queries.fetch_revenue_series`).
+That reuse is the design decision, not an implementation detail: "daily net
+sales" must mean exactly one thing across the codebase, and a second definition
+here would let the forecast and the dashboard disagree about the same day.
 
-Written up in the README as a short evaluation section with the actual numbers.
+It therefore inherits, and guarantees:
+
+- grouping on `occurred_at AT TIME ZONE 'Europe/London'`, so a day is the
+  trading day and BST does not shift takings into the previous one;
+- refunds reducing net sales and net units;
+- `payment_order_count` restricted to payment events, identical to
+  `/analytics/overview`;
+- aggregation in PostgreSQL — one row per day comes back, never the orders.
+
+The series is **zero-filled and integrity-checked**: contiguous, strictly
+increasing, no gaps. A zero day is an *observation* (the business was shut), not
+missing data. A forecaster handed closures as gaps will predict trade on
+Christmas Day.
+
+Three targets, in their own units, money always as integer pence:
+`net_sales_pence`, `payment_order_count`, `net_units`.
+
+### 6b. Validation — rolling-origin, leakage-safe by construction
+
+A random train/test split trains on next Tuesday to predict last Tuesday and
+reports an accuracy the business can never experience. Every fold trains only
+on the past and is scored only on the future:
+
+```
+|<-------- train ------->|<- test ->|
+|<----------- train ---------->|<- test ->|
+|<--------------- train -------------->|<- test ->|
+```
+
+- horizon **14 days** — long enough for ordering, rota and prep decisions,
+  short enough that a daily model is still credible at the far end;
+- **120 days** minimum training history before the first origin, which leaves
+  the 28-day features a full window and places every fold in the later
+  two-thirds of the year;
+- over one year of trade: **17 folds x 14 days = 238 previously unseen forecast
+  days**, pooled per target.
+
+Two leakage defences are structural rather than conventional:
+
+1. **The forecaster interface takes only training observations and a horizon.**
+   It is never handed the days it is being scored on, so it cannot read them by
+   accident. The rule lives in the signature, not in a reviewer's memory.
+2. **Multi-step forecasting is recursive, and `recursive_forecast` is the only
+   path to it.** Day 8's `lag_7` points at day 1 — inside the horizon and
+   unknown at forecast time — so it consumes the model's own day-1 *prediction*.
+   Reading the actual would produce a score no live forecast could reproduce,
+   and is the single easiest way to fake a good result.
+
+Hyperparameter selection obeys the same rule: Ridge's alpha is chosen per fold
+by inner validation blocks carved off the **end of the training window**, never
+against the outer test days.
+
+### 6c. Metrics — WAPE and MAE, and why not MAPE
+
+- **MAE** — how wrong a typical day is, in the unit the business thinks in.
+- **WAPE** — `sum|actual - forecast| / sum|actual|`, the same total error as a
+  share of the trade that actually happened. This is what makes different
+  targets and different periods comparable.
+- **MAPE is deliberately absent.** It divides by each day's actual, so one
+  closed day makes it undefined and one very quiet day makes it enormous. A
+  café has both, and a metric a single Christmas Day can dominate is not a
+  metric.
+
+Both are `None` rather than zero when their denominator is empty: no
+observations is not an error of zero.
+
+### 6d. Baselines, and the model that had to beat them
+
+The baselines are not strawmen. Trade is dominated by day of week, and "the
+same as last week" is what an experienced operator predicts. Three were
+measured before a model was written: seasonal naive, the four-week same-weekday
+mean, and a 28-day trailing mean.
+
+Production method: **`ridge_holiday`** — Ridge regression on 13 features.
+
+| Block | Columns | Why |
+|---|---|---|
+| Weekday dummies | 6 | The dominant signal; Monday is the reference level |
+| Lags 7 / 14 / 21 / 28 | 4 | The same weekday, one to four weeks back |
+| Trailing 7-day mean | 1 | Recent level, weekday-blind |
+| Trailing 28-day mean | 1 | Slower level, absorbs a month of drift |
+| Fixed-date holiday flag | 1 | 25 Dec, 26 Dec, 1 Jan — calendar-derived, so it cannot leak |
+
+Deliberately excluded, with reasons:
+
+- **`same_weekday_mean_4` as a feature.** It is exactly
+  `(lag7 + lag14 + lag21 + lag28) / 4` — a perfectly collinear column a linear
+  model cannot use. Ridge can reproduce the baseline by putting 0.25 on each
+  lag; it is simply not given the answer pre-computed.
+- **Month dummies.** Eleven columns to describe twelve months observed once
+  each is memorisation, not seasonality. Measured rather than assumed: adding
+  them moves pooled WAPE to 13.07% / 11.94% / 12.32%, worse on revenue and
+  orders and indistinguishable on units.
+- **Any trend or index term.** One year cannot separate trend from annual
+  seasonality, and a linear ramp extrapolated a fortnight is a liability.
+
+Output semantics are target-specific: counts are floored at zero (a negative
+number of orders is not a quantity anyone can act on), **net sales is not** — a
+day whose refunds outweigh its sales genuinely takes less than nothing, and
+clamping would make the model structurally unable to predict the one day a
+manager most wants warning of.
+
+### 6e. The result, stated plainly
+
+Pooled WAPE across all 238 unseen days:
+
+| Method | Net sales | Payment orders | Net units |
+|---|---|---|---|
+| Seasonal naive | 16.35% | 15.11% | 16.55% |
+| 28-day trailing mean | 20.21% | 14.19% | 18.45% |
+| Four-week same-weekday mean (baseline) | 13.22% | 12.47% | 13.02% |
+| **Ridge + holiday flag (production)** | **12.69%** | **11.29%** | **12.35%** |
+| Histogram gradient boosting (rejected) | 14.33% | 13.55% | 14.00% |
+
+Ridge beats the strongest baseline on all three targets. **The margin is
+modest** — 0.53 points on revenue, 1.18 on orders, 0.67 on units; £179.70 mean
+absolute error per day against the baseline's £187.18 — and it is consistent
+across targets rather than an artefact of the festive fortnight. It justifies
+the model's existence; it does not justify calling the result transformative.
+
+**The rejected challenger is documented, not dropped.** Histogram gradient
+boosting ran under the identical harness and was worse than Ridge on every
+target, and worse than the baseline too. With ~365 observations and a signal
+close to linear in these features, a model that can carve arbitrary
+interactions mostly finds noise. A documented negative result demonstrates more
+engineering maturity than an unvalidated chart.
+
+### 6f. Serving, and what is deliberately not returned
+
+`GET /analytics/forecast?target=…&horizon_days=1..14`. One request performs one
+coherent operation: the series is read once, the model is fitted once, and
+every point comes from a single recursive pass. Backtest metrics are memoised
+per process, keyed on the data they describe — a cache, not a model registry.
+
+Every response carries the evidence for reading it:
+
+```
+method                  ridge_holiday
+trained_through         last day of REAL data
+historical_wape_percent measured error on unseen days
+historical_mae          the same, in the target's unit
+backtest_folds / backtest_horizon_days
+```
+
+**No prediction intervals are returned, and the dashboard invents none.**
+Producing an interval would mean validating its coverage — checking it contains
+the outcome as often as it claims — which has not been done. An unvalidated
+interval is worse than none: it invites trust in a range nobody has checked.
+
+For the same reason WAPE is never inverted into an accuracy. `100 - WAPE` would
+be a claim about the fourteen predictions on screen; the backtest measures how
+wrong the *method* was on *other* days. The frontend enforces this: the
+Forecast page is the one component covered by DOM tests, precisely because that
+distinction lives in rendered wording rather than in a type.
+
+### 6g. Current limitations
+
+- **One year of data.** Every seasonal pattern is observed exactly once, so
+  annual seasonality cannot be separated from trend. Re-evaluate the model
+  choice — including the excluded month dummies and trend terms — once a second
+  year exists.
+- **Fixed-date holidays only.** Easter and the moveable bank holidays would
+  need a calendar library.
+- **No external features.** No weather, local events or school terms, all of
+  which plausibly move covers and none of which the system holds.
+- **No prediction intervals**, per 6f.
+- **No model persistence and no scheduled retraining.** Fitting happens per
+  request against a 365-day window.
+- **14-day ceiling.** Beyond a fortnight the recursive forecast is predicting
+  almost entirely from its own output, and nothing in the backtest supports it.
 
 ---
 

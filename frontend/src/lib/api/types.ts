@@ -427,6 +427,72 @@ export interface MenuEvidenceResponse {
   rows: MenuEvidenceRow[];
 }
 
+// --- forecasting (M6) --------------------------------------------------------
+
+/**
+ * backend/app/schemas/forecast.py :: ForecastTarget
+ *
+ * The external measure names. They map onto internal targets whose names carry
+ * their unit (`net_sales` -> `net_sales_pence`); the mapping lives in the
+ * backend and nothing here needs to know it.
+ */
+export type ForecastTarget = "net_sales" | "payment_orders" | "net_units";
+
+/**
+ * What a `predicted_value` counts, so it is never ambiguous.
+ *
+ * `pence` follows the same rule as every `*_pence` field above: an INTEGER
+ * number of pence, formatted at display time and never divided beforehand.
+ */
+export type ForecastUnit = "pence" | "orders" | "units";
+
+/** backend/app/schemas/forecast.py :: ForecastPointResponse */
+export interface ForecastPoint {
+  /** Local calendar day being PREDICTED. Always after `trained_through`. */
+  date: string;
+  predicted_value: number;
+}
+
+/**
+ * backend/app/schemas/forecast.py :: ForecastResponse
+ *
+ * A prediction, not a record. Three fields exist so a consumer cannot present
+ * it as one: `method` names what produced it, `trained_through` is the last day
+ * of REAL data behind it, and `historical_wape_percent` is the error that
+ * method actually made on unseen days.
+ *
+ * There are deliberately no interval bounds on this shape. The backend returns
+ * none — validating an interval's coverage has not been done — so the UI must
+ * not synthesise one.
+ */
+export interface ForecastResponse {
+  target: ForecastTarget;
+  unit: ForecastUnit;
+  /** Machine name, e.g. "ridge_holiday". Render it through `methodLabel`. */
+  method: string;
+  /** Last day of OBSERVED data. Everything from `forecast_start` is predicted. */
+  trained_through: string;
+  forecast_start: string;
+  forecast_end: string;
+  horizon_days: number;
+  /** Chronological, one per day, exactly `horizon_days` long. */
+  points: ForecastPoint[];
+  /**
+   * sum|actual - forecast| / sum|actual| over a rolling-origin backtest, as a
+   * percentage. Null when the evaluated period contained no trade.
+   *
+   * MEASURED ERROR, not a confidence level and not a property of the
+   * predictions above. Never render it as "100 - x % accurate".
+   */
+  historical_wape_percent: number | null;
+  /** Mean absolute error over the same backtest, in `unit`. */
+  historical_mae: number | null;
+  /** Independent forecast origins the metrics were pooled over. */
+  backtest_folds: number;
+  /** Horizon each backtest fold forecast, in days. */
+  backtest_horizon_days: number;
+}
+
 // --- imports -----------------------------------------------------------------
 
 /** backend/app/models/enums.py :: ImportStatus */

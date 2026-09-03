@@ -35,6 +35,11 @@ export const NAV_ITEMS: readonly NavItem[] = [
     description: "What sells alongside what",
   },
   {
+    href: "/forecast",
+    label: "Forecast",
+    description: "Predicted daily trading for the next 1-14 days",
+  },
+  {
     href: "/imports",
     label: "Imports",
     description: "Square export uploads and reconciliation",

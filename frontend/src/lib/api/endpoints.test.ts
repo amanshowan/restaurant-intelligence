@@ -3,12 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getChannels,
   getDayOfWeek,
+  getForecast,
   getOverview,
   getPeakHours,
   getReadiness,
   getRevenue,
 } from "./endpoints";
-import type { OverviewResponse } from "./types";
+import type { ForecastResponse, OverviewResponse } from "./types";
 
 const AUGUST = { startDate: "2026-08-01", endDate: "2026-08-31" };
 
@@ -250,6 +251,137 @@ describe("trading endpoints", () => {
     await expect(getDayOfWeek(AUGUST)).rejects.toMatchObject({
       code: "invalid_date_range",
       status: 400,
+    });
+  });
+});
+
+
+/**
+ * A forecast payload, shaped exactly as `GET /analytics/forecast` returns one.
+ * The figures are invented: these tests are about the REQUEST the client makes
+ * and the shape it parses back, never about what the model predicts.
+ */
+function forecastPayload(
+  overrides: Partial<ForecastResponse> = {},
+): ForecastResponse {
+  return {
+    target: "net_sales",
+    unit: "pence",
+    method: "ridge_holiday",
+    trained_through: "2026-08-31",
+    forecast_start: "2026-09-01",
+    forecast_end: "2026-09-02",
+    horizon_days: 2,
+    points: [
+      { date: "2026-09-01", predicted_value: 123456 },
+      { date: "2026-09-02", predicted_value: 140000 },
+    ],
+    historical_wape_percent: 12.345678,
+    historical_mae: 20000.4,
+    backtest_folds: 17,
+    backtest_horizon_days: 14,
+    ...overrides,
+  };
+}
+
+describe("getForecast", () => {
+  it("serialises the target and horizon as the query the API documents", async () => {
+    const spy = stubFetch(forecastPayload());
+
+    await getForecast("net_sales", 14);
+
+    expect(spy.mock.calls[0][0]).toBe(
+      "/api/analytics/forecast?target=net_sales&horizon_days=14",
+    );
+  });
+
+  it("sends no date range: the horizon starts from the latest imported day", async () => {
+    const spy = stubFetch(forecastPayload());
+
+    await getForecast("net_units", 7);
+
+    const url = String(spy.mock.calls[0][0]);
+    expect(url).not.toContain("start_date");
+    expect(url).not.toContain("end_date");
+  });
+
+  it("issues ONE request for the whole horizon, not one per predicted day", async () => {
+    const spy = stubFetch(forecastPayload({ horizon_days: 14 }));
+
+    await getForecast("net_sales", 14);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("switches target without touching the horizon", async () => {
+    const spy = stubFetch(forecastPayload({ target: "payment_orders", unit: "orders" }));
+
+    await getForecast("payment_orders", 14);
+
+    expect(spy.mock.calls[0][0]).toBe(
+      "/api/analytics/forecast?target=payment_orders&horizon_days=14",
+    );
+  });
+
+  it("switches horizon without touching the target", async () => {
+    const spy = stubFetch(forecastPayload({ horizon_days: 1 }));
+
+    await getForecast("net_sales", 1);
+
+    expect(spy.mock.calls[0][0]).toBe(
+      "/api/analytics/forecast?target=net_sales&horizon_days=1",
+    );
+  });
+
+  it("returns every field the page renders, unit included", async () => {
+    stubFetch(forecastPayload());
+
+    const data = await getForecast("net_sales", 2);
+
+    expect(data.unit).toBe("pence");
+    expect(data.method).toBe("ridge_holiday");
+    expect(data.trained_through).toBe("2026-08-31");
+    expect(data.points).toHaveLength(2);
+    expect(data.backtest_folds).toBe(17);
+    expect(data.backtest_horizon_days).toBe(14);
+  });
+
+  it("keeps a null WAPE null: no trade in the evaluated period is not zero error", async () => {
+    stubFetch(
+      forecastPayload({ historical_wape_percent: null, historical_mae: null }),
+    );
+
+    const data = await getForecast("net_sales", 2);
+
+    expect(data.historical_wape_percent).toBeNull();
+    expect(data.historical_mae).toBeNull();
+  });
+
+  it("surfaces too little history as the backend's own code", async () => {
+    stubFetch(
+      {
+        detail:
+          "42 day(s) of history is not enough to forecast; at least 134 are required",
+        code: "insufficient_history",
+      },
+      422,
+    );
+
+    await expect(getForecast("net_sales", 14)).rejects.toMatchObject({
+      code: "insufficient_history",
+      status: 422,
+    });
+  });
+
+  it("surfaces an unreachable backend as a network failure, not a rejection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new TypeError("fetch failed"))),
+    );
+
+    await expect(getForecast("net_sales", 14)).rejects.toMatchObject({
+      code: "network_unavailable",
+      status: 0,
     });
   });
 });
