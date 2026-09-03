@@ -160,3 +160,53 @@ export function formatAxisMoney(pence: number): string {
 
   return `${sign}£${Math.round(magnitude)}`;
 }
+
+/**
+ * A multiplier such as lift: `2.9174` -> `"2.92x"`.
+ *
+ * Null is an em dash, never `1.0`. A lift of null means the ratio is undefined
+ * because a denominator was zero; rendering it as 1.0 would assert that the two
+ * products co-occur exactly as often as chance predicts, which is a claim the
+ * data does not make.
+ */
+export function formatMultiplier(
+  value: number | null | undefined,
+  fractionDigits = 2,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return NOT_APPLICABLE;
+  }
+  return `${value.toFixed(fractionDigits)}\u00d7`;
+}
+
+/**
+ * A signed money change: `+£176.60` / `-£337.43` / `£0.00`.
+ *
+ * The sign is explicit on increases, because a change of "£176.60" beside one
+ * of "-£337.43" is ambiguous about whether the first is a gain or a total.
+ */
+export function formatMoneyChangePence(pence: number): string {
+  if (!Number.isFinite(pence)) return NOT_APPLICABLE;
+  if (pence === 0) return formatMoneyPence(0);
+  const sign = pence > 0 ? "+" : "";
+  return `${sign}${formatMoneyPence(pence)}`;
+}
+
+/** A signed percentage: `+38.4%` / `-43.6%`; an em dash when undefined. */
+export function formatPercentChange(
+  value: number | null | undefined,
+  fractionDigits = 1,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return NOT_APPLICABLE;
+  }
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(fractionDigits)}%`;
+}
+
+/** A signed whole number: `+282` / `-71`. */
+export function formatCountChange(value: number): string {
+  if (!Number.isFinite(value)) return NOT_APPLICABLE;
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatCount(Math.abs(value))}`;
+}

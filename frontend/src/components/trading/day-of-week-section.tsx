@@ -19,8 +19,13 @@ import {
   formatMoneyPence,
 } from "@/lib/format";
 
-import { AXIS_STYLE, ChartFrame, GRID_STYLE, TOOLTIP_STYLE } from "./chart-frame";
-import { EmptyNote } from "./revenue-section";
+import {
+  AXIS_STYLE,
+  ChartFrame,
+  GRID_STYLE,
+  TOOLTIP_STYLE,
+} from "@/components/charts/chart-frame";
+import { EmptyNote } from "@/components/empty-note";
 
 function WeekdayTooltip({
   active,

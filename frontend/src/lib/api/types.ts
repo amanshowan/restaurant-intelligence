@@ -173,6 +173,260 @@ export interface ChannelMixResponse {
   channels: ChannelMixEntry[];
 }
 
+// --- products, menu evidence and baskets (M4) --------------------------------
+
+/** Sort orders accepted by `/analytics/products`. */
+export type ProductSort = "net_sales" | "gross_sales" | "net_units" | "discounts";
+
+/** Sort orders accepted by `/analytics/baskets/pairs`. */
+export type PairSort = "pair_orders" | "lift" | "support";
+
+/**
+ * backend/app/analytics/service.py :: MovementStatus
+ *
+ * Why a percentage change is or is not defined. Describes the ARITHMETIC, not
+ * the business — nothing here says a product is doing well or badly.
+ *
+ *   comparable      previous period was positive, so a percentage is meaningful
+ *                   (including a fall to zero, a well-defined -100%)
+ *   new_in_period   nothing before, something now. Growth from zero is not
+ *                   infinite, it is undefined
+ *   not_comparable  previous total was zero or negative — no base to divide by
+ */
+export type MovementStatus = "comparable" | "new_in_period" | "not_comparable";
+
+/**
+ * backend/app/analytics/service.py :: RevenueDirection
+ * Sign of the change in net sales. Factual, not a judgement.
+ */
+export type RevenueDirection = "increasing" | "decreasing" | "unchanged";
+
+/**
+ * A product VARIATION — the grain everything here is keyed on.
+ * "Regular" and "Large" are different products, and `variation` is "" when the
+ * item has no price point.
+ */
+export interface ProductIdentity {
+  product_id: number;
+  name: string;
+  variation: string;
+  kind: ProductKind;
+}
+
+/** backend/app/schemas/products.py :: ProductPerformance */
+export interface ProductPerformance extends ProductIdentity {
+  gross_sales_pence: number;
+  /** Recorded by the source for this exact line, not apportioned. */
+  discounts_pence: number;
+  net_sales_pence: number;
+  net_units: number;
+  /** Distinct payment orders containing this product, not the line count. */
+  payment_order_count: number;
+  /** Null when net units is not positive: no selling price is meaningful. */
+  average_selling_price_pence: number | null;
+  share_of_net_sales_percent: number | null;
+  share_of_units_percent: number | null;
+}
+
+/** backend/app/schemas/products.py :: ProductListResponse */
+export interface ProductListResponse {
+  start_date: string;
+  end_date: string;
+  kinds: ProductKind[];
+  sort: ProductSort;
+  /** Across every product matching `kinds`, BEFORE any limit is applied. */
+  total_net_sales_pence: number;
+  total_net_units: number;
+  products: ProductPerformance[];
+}
+
+/** backend/app/schemas/products.py :: ProductTrendBucket */
+export interface ProductTrendBucket {
+  period_start: string;
+  gross_sales_pence: number;
+  discounts_pence: number;
+  net_sales_pence: number;
+  net_units: number;
+  payment_order_count: number;
+}
+
+/** backend/app/schemas/products.py :: ProductTrendResponse */
+export interface ProductTrendResponse {
+  start_date: string;
+  end_date: string;
+  granularity: Granularity;
+  product: ProductPerformance;
+  /** Chronological and zero-filled: a period with no sales is an explicit zero. */
+  buckets: ProductTrendBucket[];
+}
+
+/** backend/app/schemas/products.py :: ProductMovement */
+export interface ProductMovement extends ProductIdentity {
+  current_net_sales_pence: number;
+  previous_net_sales_pence: number;
+  net_sales_change_pence: number;
+  /** Null unless the previous period's net sales was positive. */
+  net_sales_percent_change: number | null;
+  current_net_units: number;
+  previous_net_units: number;
+  net_units_change: number;
+  status: MovementStatus;
+}
+
+/** backend/app/schemas/products.py :: ProductMoversResponse */
+export interface ProductMoversResponse {
+  start_date: string;
+  end_date: string;
+  /** The equal-length period immediately preceding, chosen by the backend. */
+  previous_start_date: string;
+  previous_end_date: string;
+  kinds: ProductKind[];
+  movements: ProductMovement[];
+}
+
+/** backend/app/schemas/baskets.py :: BasketProduct */
+export interface BasketProduct {
+  product_id: number;
+  name: string;
+  variation: string;
+}
+
+/** backend/app/schemas/baskets.py :: AttachmentEntry */
+export interface AttachmentEntry {
+  product: BasketProduct;
+  /** Payment orders containing both the anchor and this product. */
+  pair_orders: number;
+  /** Payment orders containing this product at all. */
+  product_orders: number;
+  /** orders with both / orders with the ANCHOR. Null when the ratio is undefined. */
+  attachment_rate_percent: number | null;
+  /** orders with both / orders with THIS product. High when it rarely appears alone. */
+  reverse_attachment_rate_percent: number | null;
+  support_percent: number | null;
+  lift: number | null;
+}
+
+/** backend/app/schemas/baskets.py :: ProductAttachmentsResponse */
+export interface ProductAttachmentsResponse {
+  start_date: string;
+  end_date: string;
+  kinds: ProductKind[];
+  min_pair_orders: number;
+  anchor: BasketProduct;
+  /** Eligible payment orders containing the anchor — the denominator for
+   *  `attachment_rate_percent`. */
+  anchor_order_count: number;
+  eligible_order_count: number;
+  attachments: AttachmentEntry[];
+}
+
+/** backend/app/schemas/baskets.py :: ProductPairEntry */
+export interface ProductPairEntry {
+  /**
+   * The pair is UNORDERED — each unordered pair appears exactly once, and
+   * (A,A) never appears. The two confidences below are the directional
+   * readings of that one symmetric fact.
+   */
+  product_a: BasketProduct;
+  product_b: BasketProduct;
+  /** Distinct payment orders containing both. Quantity is irrelevant. */
+  pair_orders: number;
+  product_a_orders: number;
+  product_b_orders: number;
+  /** orders with both / eligible payment orders. */
+  support_percent: number | null;
+  confidence_a_to_b_percent: number | null;
+  confidence_b_to_a_percent: number | null;
+  /**
+   * support(A,B) / (support(A) x support(B)). 1.0 means they co-occur exactly
+   * as often as independence predicts. Read WITH `pair_orders`: a pair seen
+   * twice can show a very high lift that means almost nothing.
+   */
+  lift: number | null;
+}
+
+/** backend/app/schemas/baskets.py :: ProductPairsResponse */
+export interface ProductPairsResponse {
+  start_date: string;
+  end_date: string;
+  kinds: ProductKind[];
+  sort: PairSort;
+  /** Pairs occurring fewer times than this are excluded by the SERVER. */
+  min_pair_orders: number;
+  /** Payment orders containing at least one included product — support's denominator. */
+  eligible_order_count: number;
+  distinct_product_count: number;
+  /** Pairs meeting `min_pair_orders`, BEFORE `limit` is applied. */
+  qualifying_pair_count: number;
+  pairs: ProductPairEntry[];
+}
+
+/** backend/app/schemas/menu.py :: EvidenceProduct */
+export interface EvidenceProduct {
+  product_id: number;
+  name: string;
+  variation: string;
+}
+
+/** backend/app/schemas/menu.py :: AttachmentEvidenceEntry */
+export interface AttachmentEvidenceEntry {
+  product: EvidenceProduct;
+  pair_orders: number;
+  attachment_rate_percent: number | null;
+  lift: number | null;
+}
+
+/**
+ * backend/app/schemas/menu.py :: MenuEvidenceRowResponse
+ *
+ * A decision-EVIDENCE row, not a recommendation. Nothing in it says a product
+ * should be repriced, promoted or removed: those claims need cost, margin and
+ * price-elasticity data the system does not hold.
+ */
+export interface MenuEvidenceRow {
+  product: EvidenceProduct;
+  kind: ProductKind;
+
+  gross_sales_pence: number;
+  /** EXACT per-line values from the source export, not apportioned. */
+  discounts_pence: number;
+  net_sales_pence: number;
+  net_units: number;
+  payment_order_count: number;
+
+  average_selling_price_pence: number | null;
+  /** discounts / gross sales. Null when gross is not positive. */
+  discount_rate_percent: number | null;
+  share_of_menu_net_sales_percent: number | null;
+  share_of_menu_units_percent: number | null;
+
+  previous_net_sales_pence: number;
+  previous_net_units: number;
+  net_sales_change_pence: number;
+  net_units_change: number;
+  net_sales_percent_change: number | null;
+  movement_status: MovementStatus;
+  revenue_direction: RevenueDirection;
+
+  /** Highest-lift qualifying partner, or null when none meets the threshold. */
+  strongest_attachment: AttachmentEvidenceEntry | null;
+}
+
+/** backend/app/schemas/menu.py :: MenuEvidenceResponse */
+export interface MenuEvidenceResponse {
+  start_date: string;
+  end_date: string;
+  previous_start_date: string;
+  previous_end_date: string;
+  kinds: ProductKind[];
+  min_pair_orders: number;
+  eligible_order_count: number;
+  /** Across every matching product, BEFORE `limit`. */
+  total_net_sales_pence: number;
+  total_net_units: number;
+  rows: MenuEvidenceRow[];
+}
+
 /**
  * backend/app/api/errors.py — the single envelope EVERY failure arrives in,
  * including FastAPI's own 422 request validation.

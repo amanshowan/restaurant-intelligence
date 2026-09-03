@@ -8,7 +8,7 @@ import type { PeakHourCell, PeakHoursResponse } from "@/lib/api";
 import { HEATMAP_BINS, heatmapRows, intensityBin } from "@/lib/charts";
 import { formatCount, formatHour, formatMoneyPence } from "@/lib/format";
 
-import { EmptyNote } from "./revenue-section";
+import { EmptyNote } from "@/components/empty-note";
 
 /**
  * The validated sequential ramp, index 0 = no trade.

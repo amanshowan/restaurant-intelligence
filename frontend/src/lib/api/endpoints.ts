@@ -13,8 +13,17 @@ import type {
   DayOfWeekResponse,
   Granularity,
   LivenessResponse,
+  MenuEvidenceResponse,
   OverviewResponse,
+  PairSort,
   PeakHoursResponse,
+  ProductAttachmentsResponse,
+  ProductKind,
+  ProductListResponse,
+  ProductMoversResponse,
+  ProductSort,
+  ProductTrendResponse,
+  ProductPairsResponse,
   ReadinessResponse,
   RevenueResponse,
 } from "./types";
@@ -87,5 +96,144 @@ export function getChannels(range: DateRange, options?: ApiFetchOptions) {
   return apiFetch<ChannelMixResponse>("/analytics/channels", {
     ...options,
     query: rangeQuery(range),
+  });
+}
+
+
+// --- products, menu evidence and baskets -------------------------------------
+//
+// `kind` is repeatable on every endpoint below. It is passed through
+// `buildQuery`, which serialises an array as REPEATED KEYS — the only form
+// FastAPI reads as a list. Left undefined, the server applies its own default
+// of `menu_item` only, which is what these pages want; passing it explicitly is
+// for when a caller needs gift vouchers or open-price lines included.
+
+/**
+ * `GET /analytics/menu/evidence` — every measurable fact about each product
+ * variation, in one row.
+ *
+ * Preferred over composing the same evidence from `/products`, `/movers` and
+ * `/attachments`: it is one request instead of three, the movement and
+ * attachment figures are computed against the same window, and the shares are
+ * taken over every matching product rather than only those returned.
+ *
+ * EVIDENCE ONLY. No field recommends an action.
+ */
+export function getMenuEvidence(
+  range: DateRange,
+  options?: ApiFetchOptions & {
+    limit?: number;
+    minPairOrders?: number;
+    kinds?: ProductKind[];
+  },
+) {
+  const { limit, minPairOrders, kinds, ...fetchOptions } = options ?? {};
+  return apiFetch<MenuEvidenceResponse>("/analytics/menu/evidence", {
+    ...fetchOptions,
+    query: {
+      ...rangeQuery(range),
+      limit,
+      min_pair_orders: minPairOrders,
+      kind: kinds,
+    },
+  });
+}
+
+/** `GET /analytics/products` — performance per product variation. */
+export function getProducts(
+  range: DateRange,
+  options?: ApiFetchOptions & {
+    sort?: ProductSort;
+    limit?: number;
+    kinds?: ProductKind[];
+  },
+) {
+  const { sort, limit, kinds, ...fetchOptions } = options ?? {};
+  return apiFetch<ProductListResponse>("/analytics/products", {
+    ...fetchOptions,
+    query: { ...rangeQuery(range), sort, limit, kind: kinds },
+  });
+}
+
+/**
+ * `GET /analytics/products/movers` — movement against the previous comparable
+ * period, which the SERVER chooses (an equal-length window immediately before)
+ * and reports back on the response.
+ */
+export function getProductMovers(
+  range: DateRange,
+  options?: ApiFetchOptions & { limit?: number; kinds?: ProductKind[] },
+) {
+  const { limit, kinds, ...fetchOptions } = options ?? {};
+  return apiFetch<ProductMoversResponse>("/analytics/products/movers", {
+    ...fetchOptions,
+    query: { ...rangeQuery(range), limit, kind: kinds },
+  });
+}
+
+/** `GET /analytics/products/{id}/trend` — one product over time. */
+export function getProductTrend(
+  productId: number,
+  range: DateRange,
+  granularity: Granularity,
+  options?: ApiFetchOptions,
+) {
+  return apiFetch<ProductTrendResponse>(
+    `/analytics/products/${productId}/trend`,
+    { ...options, query: { ...rangeQuery(range), granularity } },
+  );
+}
+
+/** `GET /analytics/products/{id}/attachments` — what else is in the basket. */
+export function getProductAttachments(
+  productId: number,
+  range: DateRange,
+  options?: ApiFetchOptions & {
+    minPairOrders?: number;
+    limit?: number;
+    kinds?: ProductKind[];
+  },
+) {
+  const { minPairOrders, limit, kinds, ...fetchOptions } = options ?? {};
+  return apiFetch<ProductAttachmentsResponse>(
+    `/analytics/products/${productId}/attachments`,
+    {
+      ...fetchOptions,
+      query: {
+        ...rangeQuery(range),
+        min_pair_orders: minPairOrders,
+        limit,
+        kind: kinds,
+      },
+    },
+  );
+}
+
+/**
+ * `GET /analytics/baskets/pairs` — products bought together.
+ *
+ * `minPairOrders` is applied by the SERVER, and the response echoes both the
+ * threshold used and how many pairs qualified, so the UI can state the filter
+ * it is showing you rather than quietly applying one.
+ */
+export function getBasketPairs(
+  range: DateRange,
+  options?: ApiFetchOptions & {
+    minPairOrders?: number;
+    sort?: PairSort;
+    limit?: number;
+    kinds?: ProductKind[];
+  },
+) {
+  const { minPairOrders, sort, limit, kinds, ...fetchOptions } = options ?? {};
+  return apiFetch<ProductPairsResponse>("/analytics/baskets/pairs", {
+    ...fetchOptions,
+    query: {
+      ...rangeQuery(range),
+      min_pair_orders: minPairOrders,
+      sort,
+      limit,
+      kind: kinds,
+    },
   });
 }

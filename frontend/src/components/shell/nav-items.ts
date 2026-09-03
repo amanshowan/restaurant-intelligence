@@ -32,13 +32,13 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/products",
     label: "Products",
     description: "Performance, trends and movement by menu item",
-    implemented: false,
+    implemented: true,
   },
   {
     href: "/baskets",
     label: "Basket Analysis",
     description: "What sells alongside what",
-    implemented: false,
+    implemented: true,
   },
   {
     href: "/imports",

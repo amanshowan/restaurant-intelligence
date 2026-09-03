@@ -20,8 +20,13 @@ import {
   formatPercent,
 } from "@/lib/format";
 
-import { AXIS_STYLE, ChartFrame, GRID_STYLE, TOOLTIP_STYLE } from "./chart-frame";
-import { EmptyNote } from "./revenue-section";
+import {
+  AXIS_STYLE,
+  ChartFrame,
+  GRID_STYLE,
+  TOOLTIP_STYLE,
+} from "@/components/charts/chart-frame";
+import { EmptyNote } from "@/components/empty-note";
 
 type ChannelRow = ChannelMixEntry & { label: string };
 

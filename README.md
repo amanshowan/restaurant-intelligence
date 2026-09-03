@@ -331,6 +331,29 @@ heatmap of local trading hours, and the channel mix. Its four sections load
 independently and fail independently: one endpoint falling over leaves the
 other three readable rather than blanking the page.
 
+**Products** ranks every menu variation by sales, units, discounting and
+movement against the previous comparable period, from a single
+`/analytics/menu/evidence` request. Selecting a product opens a detail panel
+with its trend over time and what it is bought with — two further requests, for
+that product only, so the page issues a small constant number regardless of
+catalogue size.
+
+**Basket Analysis** reports which products are bought together, with support,
+both directional confidences and lift, plus a scatter of co-occurrence count
+against lift. It opens at a minimum of 20 shared orders rather than the API's
+own default of 1: at 1, a lift-sorted list is led by pairs seen once. The
+threshold is an on-screen control and the response echoes the value applied.
+
+Both pages are **evidence, not recommendation**. Movement is reported
+mechanically — increasing, decreasing, unchanged, new in period, not comparable
+— and a percentage change the backend calls undefined stays undefined. Nothing
+suggests repricing, promoting or removing a product; that would need cost,
+margin and elasticity data the system does not hold.
+
+Zero-revenue menu items are shown truthfully. `Tap Water / Regular` sells
+hundreds of units at £0.00 and appears throughout the basket data; a filter to
+set such items aside exists, is labelled, and is off by default.
+
 Charts are drawn with Recharts, in a single hue. Weekdays, channels and time
 buckets are each a single series with the category on the axis, so colour is
 left free to carry intensity in the heatmap — where it is the one thing the
@@ -413,9 +436,8 @@ Demand forecasting and the natural-language query interface are planned. Their
 designs are in [ARCHITECTURE.md](ARCHITECTURE.md); neither exists in the code
 today.
 
-Within the dashboard, Overview and Trading read live data. Products, Basket
-Analysis and Imports are navigable placeholders that name the endpoints they
-will read — every one of which the API already serves.
+Within the dashboard, Overview, Trading, Products and Basket Analysis read live
+data. Imports is a navigable placeholder that names the endpoint it will read.
 
 Deliberately absent, and not planned without the data to support them: product
 costs, margins, price recommendations and elasticity modelling. The system

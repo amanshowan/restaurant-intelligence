@@ -23,7 +23,13 @@ import {
   formatMoneyPence,
 } from "@/lib/format";
 
-import { AXIS_STYLE, ChartFrame, GRID_STYLE, TOOLTIP_STYLE } from "./chart-frame";
+import { EmptyNote } from "@/components/empty-note";
+import {
+  AXIS_STYLE,
+  ChartFrame,
+  GRID_STYLE,
+  TOOLTIP_STYLE,
+} from "@/components/charts/chart-frame";
 
 /** Axis labels in whole pounds. Pence on a tick would be unreadable noise. */
 interface TooltipPayload {
@@ -220,11 +226,5 @@ function GranularityToggle({
         </button>
       ))}
     </div>
-  );
-}
-
-export function EmptyNote({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="py-6 text-center text-[12px] text-ink-muted">{children}</p>
   );
 }

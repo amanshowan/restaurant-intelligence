@@ -9,11 +9,17 @@ export { API_BASE_URL } from "./config";
 export { buildQuery, withQuery } from "./query";
 export type { QueryParams, QueryValue } from "./query";
 export {
+  getBasketPairs,
   getChannels,
   getDayOfWeek,
   getLiveness,
+  getMenuEvidence,
   getOverview,
   getPeakHours,
+  getProductAttachments,
+  getProductMovers,
+  getProductTrend,
+  getProducts,
   getReadiness,
   getRevenue,
 } from "./endpoints";

@@ -4,6 +4,10 @@ import {
   NOT_APPLICABLE,
   formatAxisMoney,
   formatCount,
+  formatCountChange,
+  formatMoneyChangePence,
+  formatMultiplier,
+  formatPercentChange,
   formatDateRangeLabel,
   formatIsoDate,
   formatMoneyPence,
@@ -117,5 +121,53 @@ describe("formatAxisMoney", () => {
   it("puts the sign outside the symbol, like formatMoneyPence", () => {
     expect(formatAxisMoney(-170000)).toBe("-£1.7k");
     expect(formatAxisMoney(-55000)).toBe("-£550");
+  });
+});
+
+describe("formatMultiplier", () => {
+  it("renders lift with a multiplication sign", () => {
+    expect(formatMultiplier(2.9174)).toBe("2.92×");
+    expect(formatMultiplier(1)).toBe("1.00×");
+  });
+
+  it("renders an undefined lift as a dash, never as 1.0", () => {
+    // 1.0 would assert "co-occurs exactly as chance predicts" — a claim the
+    // data does not make when the ratio is undefined.
+    expect(formatMultiplier(null)).toBe(NOT_APPLICABLE);
+    expect(formatMultiplier(undefined)).toBe(NOT_APPLICABLE);
+  });
+});
+
+describe("formatMoneyChangePence", () => {
+  it("signs an increase explicitly", () => {
+    expect(formatMoneyChangePence(17660)).toBe("+£176.60");
+  });
+
+  it("keeps the minus outside the symbol on a decrease", () => {
+    expect(formatMoneyChangePence(-33743)).toBe("-£337.43");
+  });
+
+  it("shows no sign at zero", () => {
+    expect(formatMoneyChangePence(0)).toBe("£0.00");
+  });
+});
+
+describe("formatPercentChange", () => {
+  it("signs the change", () => {
+    expect(formatPercentChange(38.37)).toBe("+38.4%");
+    expect(formatPercentChange(-43.57)).toBe("-43.6%");
+  });
+
+  it("renders an undefined change as a dash, not zero", () => {
+    // new_in_period: growth from zero is undefined, not 0% and not infinite.
+    expect(formatPercentChange(null)).toBe(NOT_APPLICABLE);
+  });
+});
+
+describe("formatCountChange", () => {
+  it("signs and groups", () => {
+    expect(formatCountChange(1282)).toBe("+1,282");
+    expect(formatCountChange(-71)).toBe("-71");
+    expect(formatCountChange(0)).toBe("0");
   });
 });
