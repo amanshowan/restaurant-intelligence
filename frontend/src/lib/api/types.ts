@@ -57,6 +57,122 @@ export interface OverviewResponse {
   average_order_value_pence: number;
 }
 
+/** backend/app/schemas/analytics.py :: WeekdayName */
+export type WeekdayName =
+  | "Monday"
+  | "Tuesday"
+  | "Wednesday"
+  | "Thursday"
+  | "Friday"
+  | "Saturday"
+  | "Sunday";
+
+/** Bucket size for a time series. Weekly buckets start on Monday. */
+export type Granularity = "day" | "week";
+
+/** backend/app/schemas/analytics.py :: RevenueBucketResponse */
+export interface RevenueBucket {
+  /** Local calendar date the bucket starts on; the Monday for weekly. */
+  period_start: string;
+  net_sales_pence: number;
+  gross_sales_pence: number;
+  discounts_pence: number;
+  payment_order_count: number;
+  net_units: number;
+}
+
+/** backend/app/schemas/analytics.py :: RevenueResponse */
+export interface RevenueResponse {
+  start_date: string;
+  end_date: string;
+  granularity: Granularity;
+  /**
+   * Chronological, and ZERO-FILLED: a period with no trade is an explicit zero
+   * bucket rather than a gap. Never filter these out — a closed day is a fact,
+   * and dropping it would silently join the lines either side of it.
+   *
+   * With weekly granularity the FIRST bucket may start before `start_date`,
+   * because a partial week is reported under the Monday it belongs to.
+   */
+  buckets: RevenueBucket[];
+}
+
+/** backend/app/schemas/analytics.py :: WeekdayTotalsResponse */
+export interface WeekdayTotals {
+  /** 1 = Monday … 7 = Sunday. */
+  iso_weekday: number;
+  weekday: WeekdayName;
+  net_sales_pence: number;
+  payment_order_count: number;
+  net_units: number;
+  /** 0 when the weekday has no paid orders. */
+  average_order_value_pence: number;
+}
+
+/** backend/app/schemas/analytics.py :: DayOfWeekResponse */
+export interface DayOfWeekResponse {
+  start_date: string;
+  end_date: string;
+  /**
+   * Always seven entries, Monday to Sunday, in fixed order — the backend
+   * guarantees it, so the client does no ordering of its own.
+   *
+   * Each row aggregates EVERY occurrence of that weekday in the range: all the
+   * Mondays summed, not one row per date.
+   */
+  weekdays: WeekdayTotals[];
+}
+
+/** backend/app/schemas/analytics.py :: PeakHourCell */
+export interface PeakHourCell {
+  iso_weekday: number;
+  weekday: WeekdayName;
+  /** Hour of the local trading day (Europe/London), 0-23. Already local: the
+   *  client must not regroup or shift it. */
+  hour: number;
+  payment_order_count: number;
+  net_sales_pence: number;
+  net_units: number;
+}
+
+/** backend/app/schemas/analytics.py :: PeakHoursResponse */
+export interface PeakHoursResponse {
+  start_date: string;
+  end_date: string;
+  /** Always 168 cells (7 x 24), Monday 00:00 to Sunday 23:00, zero-filled. */
+  cells: PeakHourCell[];
+  /** Highest payment-order count in any single cell — enough on its own to
+   *  scale the colour ramp. 0 for a period with no trade. */
+  peak_payment_order_count: number;
+  /** Busiest cells by payment-order volume, most first. */
+  busiest: PeakHourCell[];
+}
+
+/** backend/app/schemas/analytics.py :: ChannelMixEntry */
+export interface ChannelMixEntry {
+  channel: Channel;
+  net_sales_pence: number;
+  payment_order_count: number;
+  net_units: number;
+  average_order_value_pence: number;
+  /** Null when there are no paid orders — undefined, not zero. Rounded to 2dp,
+   *  so entries may not sum to exactly 100. */
+  share_of_payment_orders_percent: number | null;
+  /** Null when total net sales is not positive, where a share would be
+   *  undefined or misleading. */
+  share_of_net_sales_percent: number | null;
+}
+
+/** backend/app/schemas/analytics.py :: ChannelMixResponse */
+export interface ChannelMixResponse {
+  start_date: string;
+  end_date: string;
+  /** Every canonical channel PRESENT in the period, highest net sales first.
+   *  Channels absent from the period are omitted entirely, so this is not a
+   *  fixed-length list and `unknown` appears only when it occurred. */
+  channels: ChannelMixEntry[];
+}
+
 /**
  * backend/app/api/errors.py — the single envelope EVERY failure arrives in,
  * including FastAPI's own 422 request validation.

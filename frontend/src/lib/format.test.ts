@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   NOT_APPLICABLE,
+  formatAxisMoney,
   formatCount,
   formatDateRangeLabel,
   formatIsoDate,
@@ -88,5 +89,33 @@ describe("formatDateRangeLabel", () => {
 
   it("collapses a single-day range to one date", () => {
     expect(formatDateRangeLabel("2026-08-01", "2026-08-01")).toBe("1 Aug 2026");
+  });
+});
+
+describe("formatAxisMoney", () => {
+  it("shows exact pounds below a thousand", () => {
+    expect(formatAxisMoney(55000)).toBe("£550");
+    expect(formatAxisMoney(0)).toBe("£0");
+  });
+
+  it("keeps a decimal in the thousands so two ticks cannot share a label", () => {
+    // The bug this exists for: rounding to whole thousands rendered £1,650 and
+    // £2,100 both as "£2k", putting two different ticks under one label.
+    expect(formatAxisMoney(170000)).toBe("£1.7k");
+    expect(formatAxisMoney(210000)).toBe("£2.1k");
+    expect(formatAxisMoney(170000)).not.toBe(formatAxisMoney(210000));
+  });
+
+  it("drops a trailing .0", () => {
+    expect(formatAxisMoney(200000)).toBe("£2k");
+  });
+
+  it("rounds to whole thousands once the axis is large", () => {
+    expect(formatAxisMoney(4719408)).toBe("£47k");
+  });
+
+  it("puts the sign outside the symbol, like formatMoneyPence", () => {
+    expect(formatAxisMoney(-170000)).toBe("-£1.7k");
+    expect(formatAxisMoney(-55000)).toBe("-£550");
   });
 });

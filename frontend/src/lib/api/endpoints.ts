@@ -2,17 +2,21 @@
  * One function per endpoint. Components call these; nothing outside this
  * directory calls `fetch` or knows a URL.
  *
- * Only the endpoints Commit 17 actually uses are here. The M3/M4 analytics
- * surface — revenue, day-of-week, peak hours, channels, products, baskets, menu
- * evidence — is added as each is wired to a view, not speculatively.
+ * Endpoints are added as each is wired to a view rather than speculatively, so
+ * the product, basket and menu-evidence surface is not here yet.
  */
 
 import { apiFetch, type ApiFetchOptions } from "./client";
 import type { DateRange } from "../date-range";
 import type {
+  ChannelMixResponse,
+  DayOfWeekResponse,
+  Granularity,
   LivenessResponse,
   OverviewResponse,
+  PeakHoursResponse,
   ReadinessResponse,
+  RevenueResponse,
 } from "./types";
 
 /** Every analytics endpoint takes the same inclusive local date range. */
@@ -38,6 +42,49 @@ export function getReadiness(options?: ApiFetchOptions) {
 /** `GET /analytics/overview` — headline KPIs for an inclusive date range. */
 export function getOverview(range: DateRange, options?: ApiFetchOptions) {
   return apiFetch<OverviewResponse>("/analytics/overview", {
+    ...options,
+    query: rangeQuery(range),
+  });
+}
+
+
+/**
+ * `GET /analytics/revenue` — net sales and volume over time.
+ *
+ * `granularity` is part of the request, not something to derive by re-bucketing
+ * daily data: weekly buckets are Monday-based and computed in the database,
+ * and re-summing them here would be a second implementation of the same rule.
+ */
+export function getRevenue(
+  range: DateRange,
+  granularity: Granularity,
+  options?: ApiFetchOptions,
+) {
+  return apiFetch<RevenueResponse>("/analytics/revenue", {
+    ...options,
+    query: { ...rangeQuery(range), granularity },
+  });
+}
+
+/** `GET /analytics/day-of-week` — Monday-to-Sunday totals across the period. */
+export function getDayOfWeek(range: DateRange, options?: ApiFetchOptions) {
+  return apiFetch<DayOfWeekResponse>("/analytics/day-of-week", {
+    ...options,
+    query: rangeQuery(range),
+  });
+}
+
+/** `GET /analytics/peak-hours` — the 7x24 local-hour grid. */
+export function getPeakHours(range: DateRange, options?: ApiFetchOptions) {
+  return apiFetch<PeakHoursResponse>("/analytics/peak-hours", {
+    ...options,
+    query: rangeQuery(range),
+  });
+}
+
+/** `GET /analytics/channels` — how orders reached the business. */
+export function getChannels(range: DateRange, options?: ApiFetchOptions) {
+  return apiFetch<ChannelMixResponse>("/analytics/channels", {
     ...options,
     query: rangeQuery(range),
   });

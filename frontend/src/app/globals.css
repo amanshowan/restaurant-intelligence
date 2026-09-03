@@ -31,6 +31,32 @@
   --color-negative: #a13322;
 
   /*
+   * Chart colours.
+   *
+   * ONE hue across every chart on the dashboard. Channels, weekdays and time
+   * buckets are all plotted as a single series each, with the category carried
+   * by the axis label rather than by colour — so there is no categorical
+   * palette to distinguish, and none of the rainbow that colouring nominal
+   * categories would produce. Colour is left free to mean intensity, which is
+   * the one place it carries information the chart does not otherwise show.
+   *
+   * The heat ramp below is a validated sequential scale: one hue, monotonic in
+   * lightness, adjacent steps at least 0.06 apart in OKLCH L, and a light end
+   * that clears 2:1 contrast against the surface so the quietest trading hour
+   * is still visibly a value rather than an empty cell.
+   */
+  --color-chart-mark: #0d5b8a;
+  --color-chart-mark-soft: #cfe0ec;
+  --color-chart-grid: #eceff2;
+  --color-chart-axis: #99a3ad;
+
+  --color-heat-0: #f7f9fa;
+  --color-heat-1: #8fb8d2;
+  --color-heat-2: #63a0c2;
+  --color-heat-3: #3a82aa;
+  --color-heat-4: #0d5b8a;
+
+  /*
    * A system stack rather than a webfont. `next/font/google` would add a
    * network fetch to every production build — a build that fails on an
    * offline or restricted network is a poor trade for a typeface no one will

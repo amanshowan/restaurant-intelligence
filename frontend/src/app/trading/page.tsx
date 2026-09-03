@@ -1,25 +1,17 @@
 import type { Metadata } from "next";
 
-import { PageHeader } from "@/components/page-header";
-import { PlaceholderPanel } from "@/components/placeholder-panel";
+import { TradingDashboard } from "@/components/trading/trading-dashboard";
 
 export const metadata: Metadata = { title: "Trading" };
 
-const ENDPOINTS = [
-    "/analytics/revenue",
-    "/analytics/day-of-week",
-    "/analytics/peak-hours",
-    "/analytics/channels",
-] as const;
-
+/**
+ * The Trading page.
+ *
+ * A thin Server Component around a client dashboard, for the same reason as
+ * Overview: the figures are fetched in the BROWSER so they travel through the
+ * same-origin `/api` rewrite, and so the date range and the daily/weekly
+ * toggle are interactive without a server round trip.
+ */
 export default function TradingPage() {
-  return (
-    <>
-      <PageHeader
-        title="Trading"
-        description="Revenue over time, weekday patterns and the hourly trading profile."
-      />
-      <PlaceholderPanel href="/trading" endpoints={ENDPOINTS} />
-    </>
-  );
+  return <TradingDashboard />;
 }

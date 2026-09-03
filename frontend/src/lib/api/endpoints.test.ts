@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getOverview, getReadiness } from "./endpoints";
+import {
+  getChannels,
+  getDayOfWeek,
+  getOverview,
+  getPeakHours,
+  getReadiness,
+  getRevenue,
+} from "./endpoints";
 import type { OverviewResponse } from "./types";
+
+const AUGUST = { startDate: "2026-08-01", endDate: "2026-08-31" };
 
 /** A complete overview payload, shaped exactly as the API returns one. */
 function overviewPayload(
@@ -118,6 +127,129 @@ describe("getReadiness", () => {
     await expect(getReadiness()).rejects.toMatchObject({
       code: "not_ready",
       status: 503,
+    });
+  });
+});
+
+
+describe("trading endpoints", () => {
+  it("sends granularity as a request parameter, not something derived client-side", async () => {
+    // Weekly buckets are Monday-based and computed in the database. Asking the
+    // API for them keeps that rule in one place; re-bucketing daily data here
+    // would be a second implementation of it.
+    const spy = stubFetch({ start_date: "", end_date: "", granularity: "week", buckets: [] });
+
+    await getRevenue(AUGUST, "week");
+
+    expect(spy.mock.calls[0][0]).toBe(
+      "/api/analytics/revenue?start_date=2026-08-01&end_date=2026-08-31&granularity=week",
+    );
+  });
+
+  it("requests daily granularity explicitly", async () => {
+    const spy = stubFetch({ start_date: "", end_date: "", granularity: "day", buckets: [] });
+    await getRevenue(AUGUST, "day");
+    expect(spy.mock.calls[0][0]).toContain("granularity=day");
+  });
+
+  it("builds the day-of-week, peak-hours and channel URLs from the same range", async () => {
+    for (const [call, path] of [
+      [() => getDayOfWeek(AUGUST), "/api/analytics/day-of-week"],
+      [() => getPeakHours(AUGUST), "/api/analytics/peak-hours"],
+      [() => getChannels(AUGUST), "/api/analytics/channels"],
+    ] as const) {
+      const spy = stubFetch({});
+      await call();
+      expect(spy.mock.calls[0][0]).toBe(
+        `${path}?start_date=2026-08-01&end_date=2026-08-31`,
+      );
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("parses a revenue series including its zero buckets", async () => {
+    stubFetch({
+      start_date: "2026-08-01",
+      end_date: "2026-08-31",
+      granularity: "day",
+      buckets: [
+        {
+          period_start: "2026-08-01",
+          net_sales_pence: 171960,
+          gross_sales_pence: 174341,
+          discounts_pence: 2381,
+          payment_order_count: 105,
+          net_units: 326,
+        },
+        {
+          period_start: "2026-08-02",
+          net_sales_pence: 0,
+          gross_sales_pence: 0,
+          discounts_pence: 0,
+          payment_order_count: 0,
+          net_units: 0,
+        },
+      ],
+    });
+
+    const data = await getRevenue(AUGUST, "day");
+
+    expect(data.buckets).toHaveLength(2);
+    expect(data.buckets[1].payment_order_count).toBe(0);
+    expect(data.granularity).toBe("day");
+  });
+
+  it("parses a channel mix with a null share", async () => {
+    stubFetch({
+      start_date: "2026-08-01",
+      end_date: "2026-08-31",
+      channels: [
+        {
+          channel: "unknown",
+          net_sales_pence: 0,
+          payment_order_count: 0,
+          net_units: 0,
+          average_order_value_pence: 0,
+          share_of_payment_orders_percent: null,
+          share_of_net_sales_percent: null,
+        },
+      ],
+    });
+
+    const data = await getChannels(AUGUST);
+
+    // Null must survive the round trip: it means undefined, not zero.
+    expect(data.channels[0].share_of_net_sales_percent).toBeNull();
+    expect(data.channels[0].share_of_payment_orders_percent).toBeNull();
+  });
+
+  it("parses a completely empty analytics period without inventing values", async () => {
+    stubFetch({
+      start_date: "2026-09-01",
+      end_date: "2026-09-30",
+      cells: [],
+      peak_payment_order_count: 0,
+      busiest: [],
+    });
+
+    const data = await getPeakHours({
+      startDate: "2026-09-01",
+      endDate: "2026-09-30",
+    });
+
+    expect(data.cells).toEqual([]);
+    expect(data.peak_payment_order_count).toBe(0);
+    expect(data.busiest).toEqual([]);
+  });
+
+  it("surfaces a rejected range from a trading endpoint too", async () => {
+    stubFetch(
+      { detail: "range too long", code: "invalid_date_range" },
+      400,
+    );
+    await expect(getDayOfWeek(AUGUST)).rejects.toMatchObject({
+      code: "invalid_date_range",
+      status: 400,
     });
   });
 });

@@ -325,6 +325,19 @@ The Next.js app at **<http://localhost:3000>** opens on **Overview**: net sales,
 payment orders, average order value, net units, gross sales and discounts for a
 date range, read live from `/analytics/overview`.
 
+**Trading** covers overall trading performance over the same date range —
+revenue over time (daily or weekly), day-of-week totals, a weekday x hour
+heatmap of local trading hours, and the channel mix. Its four sections load
+independently and fail independently: one endpoint falling over leaves the
+other three readable rather than blanking the page.
+
+Charts are drawn with Recharts, in a single hue. Weekdays, channels and time
+buckets are each a single series with the category on the axis, so colour is
+left free to carry intensity in the heatmap — where it is the one thing the
+chart does not otherwise show. There are deliberately no dual-axis charts:
+money and order counts are plotted separately rather than against two scales
+whose alignment would be arbitrary.
+
 It opens on the **last complete calendar month**, computed from the clock in
 `Europe/London`. The current month is always partial, and a rolling 30 days
 straddles two months — neither is the unit a business reconciles in. Nothing
@@ -400,7 +413,7 @@ Demand forecasting and the natural-language query interface are planned. Their
 designs are in [ARCHITECTURE.md](ARCHITECTURE.md); neither exists in the code
 today.
 
-Within the dashboard, only Overview reads live data. Trading, Products, Basket
+Within the dashboard, Overview and Trading read live data. Products, Basket
 Analysis and Imports are navigable placeholders that name the endpoints they
 will read — every one of which the API already serves.
 

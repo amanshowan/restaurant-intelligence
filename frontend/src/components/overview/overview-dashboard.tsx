@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import { DateRangeControl } from "@/components/date-range-control";
 import { ErrorPanel } from "@/components/error-panel";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
-import { ApiError, getOverview, type OverviewResponse } from "@/lib/api";
+import { getOverview, type OverviewResponse } from "@/lib/api";
+import { useAnalyticsResource } from "@/lib/use-analytics-resource";
 import { discountRatePercent } from "@/lib/metrics";
 import {
   defaultDateRange,
@@ -34,70 +35,19 @@ export function OverviewDashboard() {
   // that happens to hold data. See `defaultDateRange`.
   const [range, setRange] = useState<DateRange>(() => defaultDateRange());
 
-  const [data, setData] = useState<OverviewResponse | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
-  // The request whose result is currently on screen. Compared against the
-  // request the current inputs describe, below.
-  const [settledKey, setSettledKey] = useState<string | null>(null);
-  // Bumped to re-run the effect on "Try again" without changing the range.
-  const [attempt, setAttempt] = useState(0);
-
   const validationError = validateDateRange(range);
 
-  // Identifies the request the current inputs ask for. Also the effect's
-  // dependency, so an object identity change cannot re-fire a fetch that the
-  // values themselves did not change.
-  const requestKey = `${range.startDate}|${range.endDate}|${attempt}`;
+  // The same request machinery Trading uses — cancellation, stale-response
+  // protection and a derived busy flag — rather than a second hand-rolled
+  // copy of it here.
+  const { data, error, busy, retry } = useAnalyticsResource<OverviewResponse>(
+    `overview|${range.startDate}|${range.endDate}`,
+    useCallback((signal) => getOverview(range, { signal }), [range]),
+    // A range the client already knows the server will reject is not worth a
+    // round trip; the message is already beside the field that caused it.
+    { enabled: validationError === null },
+  );
 
-  // Loading is DERIVED, never stored: we are loading exactly when the result
-  // on screen is not the one the current inputs describe. Storing it would
-  // mean calling setState synchronously inside the effect below, which
-  // cascades an extra render on every fetch — and it would be a second source
-  // of truth that could disagree with the data beside it.
-  const busy = validationError === null && settledKey !== requestKey;
-
-  useEffect(() => {
-    // A range the server is certain to reject is not worth a round trip. The
-    // message is already on screen next to the field that caused it.
-    if (validationError) return;
-
-    // Abort on cleanup so a slow response for an abandoned range cannot land
-    // after a newer one and overwrite it.
-    const controller = new AbortController();
-
-    // Every setState below happens in an async callback, after the effect body
-    // has returned — never synchronously within it.
-    getOverview(range, { signal: controller.signal })
-      .then((result) => {
-        setData(result);
-        setError(null);
-        setSettledKey(requestKey);
-      })
-      .catch((caught: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(
-          caught instanceof ApiError
-            ? caught
-            : new ApiError({
-                status: 0,
-                code: "unexpected_error",
-                detail: "Something went wrong loading these figures.",
-              }),
-        );
-        setSettledKey(requestKey);
-      });
-
-    return () => controller.abort();
-    // `range` is read inside, but `requestKey` is derived from its two fields
-    // and is what actually decides whether a new request is needed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestKey, validationError]);
-
-  const retry = useCallback(() => setAttempt((value) => value + 1), []);
-
-  // While a request is in flight the PREVIOUS figures stay on screen, dimmed,
-  // instead of collapsing to skeletons. Nothing moves, and the numbers being
-  // replaced are visibly the old ones.
   const stale = busy && data !== null;
 
   const value = (render: (d: OverviewResponse) => string): string | null =>

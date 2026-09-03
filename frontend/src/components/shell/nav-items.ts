@@ -26,7 +26,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     href: "/trading",
     label: "Trading",
     description: "Revenue over time, weekday and hourly patterns",
-    implemented: false,
+    implemented: true,
   },
   {
     href: "/products",

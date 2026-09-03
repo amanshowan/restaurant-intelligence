@@ -160,8 +160,17 @@ services:
       # dependencies `npm ci` installed into the image.
       #
       # Trade-off: the volume outlives the image, so it does NOT pick up a
-      # changed package-lock.json on its own. After changing dependencies:
-      #   docker compose down -v web && docker compose up -d --build web
+      # changed package-lock.json on its own. After changing dependencies,
+      # rebuild and replace THIS volume by name:
+      #
+      #   docker compose build web
+      #   docker compose rm -sf web
+      #   docker volume rm restaurant-intelligence_frontend_node_modules
+      #   docker compose up -d web
+      #
+      # Named explicitly rather than via `docker compose down -v`, which
+      # removes every volume in the project — including postgres_data, and with
+      # it the imported Square data the dashboard is showing.
       - frontend_node_modules:/app/node_modules
       # Likewise for the build cache. Keeping .next off the bind mount avoids
       # writing thousands of small files across the macOS filesystem boundary,
