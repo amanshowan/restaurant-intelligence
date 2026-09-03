@@ -461,6 +461,68 @@ no bounds, and the dashboard invents none.
   supports it.
 
 
+## Structured analytics query (M7, in progress)
+
+`POST /analytics/query` runs **one operation from a closed whitelist** and
+returns structured evidence. It is the substrate a language model will be given
+in the next commit — and the reason that model will never be able to write a
+query.
+
+**There is no natural-language interface yet.** Nothing in this repository
+interprets a question, calls an LLM, or writes a sentence. That arrives in
+Commit 25.
+
+```
+LLM  →  validated AnalyticsRequest  →  AnalyticsExecutor
+     →  existing M3–M6 services     →  EvidenceBundle  →  LLM explanation
+                                                          (Commit 25)
+```
+
+Twelve operations are supported: `overview`, `revenue_over_time`,
+`day_of_week`, `peak_hours`, `channel_mix`, `product_performance`,
+`product_movers`, `product_trend`, `product_attachments`, `basket_pairs`,
+`menu_evidence`, `forecast`. Each maps to a service the HTTP API and dashboard
+already use, so there is exactly one definition of net sales in the system.
+
+```bash
+curl -s localhost:8000/analytics/query -H 'content-type: application/json' -d '{"operation":"product_attachments","start_date":"2025-09-01","end_date":"2026-08-31","product":{"name":"The Big Breakfast","variation":"Regular"},"min_pair_orders":20,"limit":5}'
+```
+
+### Arbitrary SQL is absent, not filtered
+
+There is no `execute_sql`, no `run_query`, no table or column selector and no
+generic fallback operation. `app/nlq/` imports `sqlalchemy` in one module (the
+product name resolver) and `sqlalchemy.text` in none; it calls no `eval`,
+`exec`, `compile` or `getattr`. `tests/test_nlq_safety.py` asserts each of
+those against the parsed source rather than by trying inputs.
+
+Requests are `extra="forbid"` and frozen, so a body carrying `sql`, `table` or
+a misspelled field is rejected rather than ignored. Ranges reuse the same
+≤366-day `build_window` as every other endpoint, and horizons the forecast
+service's own 1–14 ceiling. None of that opens a database session.
+
+### Product names are values
+
+Names match exactly, case- and whitespace-insensitively, against the catalogue.
+No prefixes, wildcards, edit distance or embeddings — `"Latte"` does not match
+`"Caffe Latte"`, because a wrong product produces a confident, fluent, wrong
+answer. A name matching several variations returns `status="ambiguous_product"`
+with the candidates and runs nothing. `'; DROP TABLE orders; --` is a bound
+parameter that matches no product.
+
+### Evidence carries its own provenance
+
+Every field is labelled `measured` (aggregated from orders that happened),
+`derived` (a share, rate or change computed from measured numbers) or
+`forecast` (model output for days that have not happened). Forecast evidence
+also carries the method, the last day of real data, and the WAPE and MAE that
+method actually made on unseen days — so a prediction cannot be described as a
+record. Money stays integer pence, and **null means undefined, never zero**.
+
+Result sizes are capped tighter than the public endpoints (50 ranked products,
+25 attachments, 24 of 168 weekday/hour cells) and every response reports what
+it withheld.
+
 ## Dashboard
 
 The Next.js app at **<http://localhost:3000>** opens on **Overview**: net sales,
@@ -572,6 +634,8 @@ backend/
     services/     import orchestration, persistence, reconciliation
     analytics/    SQL aggregations behind the analytics endpoints
     forecasting/  daily series, baselines, features, models, backtest harness
+    nlq/          M7: operation whitelist, request schemas, product
+                  resolution, executor, evidence — no LLM client
     models/       SQLAlchemy models
     schemas/      Pydantic — external Square shapes vs canonical records
     api/          FastAPI routes
@@ -606,9 +670,16 @@ extra confidence.
 
 ## Not built yet
 
-The natural-language query interface is planned. Its design is in
-[ARCHITECTURE.md §7](ARCHITECTURE.md); it does not exist in the code today, and
-nothing in the dashboard interprets a question or generates a recommendation.
+The natural-language interface is **in progress**. Commit 24 has built the safe
+query substrate described in
+[Structured analytics query](#structured-analytics-query-m7-in-progress) and
+[ARCHITECTURE.md §7](ARCHITECTURE.md) — a closed operation whitelist, a
+deterministic executor and an evidence format with provenance.
+
+What does **not** exist yet: any LLM call, API key, prompt, natural-language
+parsing or chat UI. Nothing in the dashboard interprets a question or generates
+a recommendation. Asking this system a question in English does not work today;
+that is Commit 25.
 
 Every section of the dashboard is built and reads live data. There are no
 placeholder pages.

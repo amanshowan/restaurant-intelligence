@@ -663,35 +663,188 @@ distinction lives in rendered wording rather than in a type.
 
 ## 7. Natural-language query — constrained by design
 
-**The LLM does not generate SQL.** This is the project's strongest security
-discussion.
+**The LLM does not query the database.** This is the project's strongest
+security discussion, and as of M7 Commit 24 it is implemented rather than
+planned.
 
 ```
 User question
    ↓
-LLM  ──► structured JSON query spec (metric, dimension, filters, date range)
+LLM  ──► AnalyticsRequest          (Commit 25 — not yet built)
    ↓
-Pydantic validation  ──► reject anything outside the allowed enums
+Pydantic validation                 closed enum, extra="forbid", bounded values
    ↓
-Whitelisted query builder  ──► parameterised SQL
+AnalyticsExecutor                   explicit dispatch table, no dynamic lookup
    ↓
-Database  ──► result set
+Existing M3–M6 services             the same code the HTTP API and dashboard use
    ↓
-LLM  ──► natural-language interpretation of the numbers
+EvidenceBundle                      numbers, units, provenance, limits
+   ↓
+LLM  ──► explanation               (Commit 25 — not yet built)
 ```
 
-The model selects from an **enumerated** set of metrics, dimensions and
-filters. It never emits SQL, table names, or column names. An invalid or
-adversarial spec is rejected by validation before reaching the database.
+The model selects from an **enumerated** set of operations. It never emits SQL,
+table names or column names, because the contract has nowhere to put them.
+
+### 7a. What Commit 24 builds, and what it deliberately does not
+
+Built: the operation enum, the request schemas, the product resolver, the
+executor, the evidence representation, and one endpoint that accepts the
+schema. Absent by design: any LLM client, API key, prompt, natural-language
+parsing, chat UI, embedding, vector store or external data source. Commit 24
+contains **no generative behaviour at all**, which is what makes it testable —
+the same request against the same data returns byte-identical evidence.
+
+The split it creates is the reason for building it first:
+
+| Stage | Commit |
+|---|---|
+| natural language → structured request | 25 |
+| structured request → facts | **24** |
+| facts → explanation | 25 |
+
+The middle stage can be tested exhaustively without a model in the loop, and
+the outer two can later be tested against fixed evidence without a database.
+
+### 7b. Arbitrary SQL is not "prevented" — it is absent
+
+There is no `execute_sql(sql)`, no `run_query(text)`, no table or column
+selector and no generic `custom` operation. This is stated as a positive
+architectural fact rather than a filter, because a filter can be bypassed and a
+capability that does not exist cannot be.
+
+Concretely, `app/nlq/` imports `sqlalchemy` in exactly one module — the product
+resolver — and imports `sqlalchemy.text` nowhere. It calls no `eval`, `exec`,
+`compile` or `getattr`. Every one of those statements is asserted by
+`tests/test_nlq_safety.py` against the parsed source, not merely by trying
+inputs: a behavioural test proves the paths you thought to try are closed,
+whereas reading the module tells you whether a path exists.
+
+The twelve operations are:
+
+| Operation | Backed by |
+|---|---|
+| `overview` | `AnalyticsService.overview` |
+| `revenue_over_time` | `AnalyticsService.revenue` |
+| `day_of_week` | `AnalyticsService.day_of_week` |
+| `peak_hours` | `AnalyticsService.peak_hours` |
+| `channel_mix` | `AnalyticsService.channel_mix` |
+| `product_performance` | `AnalyticsService.products` |
+| `product_movers` | `AnalyticsService.product_movers` |
+| `product_trend` | `AnalyticsService.product_trend` |
+| `product_attachments` | `AnalyticsService.product_attachments` |
+| `basket_pairs` | `AnalyticsService.product_pairs` |
+| `menu_evidence` | `AnalyticsService.menu_evidence` |
+| `forecast` | `ForecastService.forecast` |
+
+M7 is a **consumer** of M3–M6, never a parallel implementation. Net sales,
+refund handling, channel identity, basket association and the forecast model
+are each defined once. Two implementations would eventually disagree, and the
+one an AI quoted would be the one nobody was reading.
+
+### 7c. Validation happens before the database
+
+Every request model is `extra="forbid"` and frozen. A body carrying `sql`,
+`table`, `where` or a misspelled field is rejected rather than silently
+ignored — quietly dropping an unexpected key is how an injection attempt
+becomes an unnoticed one. Ranges are validated by the same `build_window` the
+HTTP API uses, so the ≤366-day span cannot drift; horizons are bounded by the
+forecast service's own `MAX_HORIZON_DAYS`; every other free choice is an enum
+or an integer with explicit bounds. None of this opens a session.
+
+`operation` is **required** on every member, with no default. An earlier draft
+defaulted each model to its own tag, which read harmlessly but meant an empty
+body `{}` satisfied the one request whose fields were all optional and came
+back as a fourteen-day forecast. A whitelist that picks an operation for a
+caller who named none is not a whitelist.
+
+### 7d. Product names are values, never syntax
+
+A question says "Big Breakfast"; the database says 25. The resolver matches
+exactly, case- and whitespace-insensitively, against the existing catalogue,
+and refuses everything else: no prefixes, substrings, wildcards, edit distance
+or embeddings. "Latte" therefore does not match "Caffe Latte" and is reported
+as unknown — a wrong product produces a confident, fluent, wrong answer, which
+is worse than no answer.
+
+An ambiguous name is an **answer, not an error**. "Caffe Latte" matches Regular
+and Large, so the bundle comes back with `status="ambiguous_product"`, both
+candidates, and no analytics run. Picking the bigger seller would be a silent
+decision about what the user asked.
+
+The name reaches PostgreSQL as a bound parameter inside a SQLAlchemy
+expression. `'; DROP TABLE orders; --` is looked up, matches nothing, and is
+reported as a product the café does not sell.
+
+### 7e. Evidence, not prose — and provenance that survives to the sentence
+
+The executor returns numbers with three things attached to each field: what it
+is counted in (`units`), where it came from (`field_provenance`), and what was
+withheld (`limits`).
+
+Provenance has exactly three values, because only one distinction changes how a
+sentence may be written:
+
+* `measured` — aggregated from orders that happened.
+* `derived` — arithmetic over measured quantities: a share, a rate, a change.
+* `forecast` — model output for days that have not happened.
+
+Anything finer would be metadata nobody acts on. Forecast evidence additionally
+carries the method, `trained_through`, and the WAPE and MAE that method
+actually made on unseen days under backtesting — so a generator cannot describe
+a prediction as a record, and cannot quote an accuracy it was not given.
+
+Two boundary rules are carried through unchanged from M3–M6: money stays
+integer pence, and **null means undefined, never zero**. A share of an empty
+period, a lift with no denominator and a selling price for a product with no
+net units are all null, and the bundle warns explicitly that they must not be
+rendered as 0.
+
+### 7f. Comparisons, without an expression language
+
+Comparison support reuses what already exists: `previous_window` — an
+equal-length range ending the day before the requested one — which M4 already
+uses for product movers and menu evidence. `overview` gains one boolean,
+`compare_to_previous_period`, and nothing else. There is no formula field, no
+user-defined period arithmetic and no expression evaluator. Sophisticated
+comparison planning ("Q2 versus the same quarter last year") is left to Commit
+25, where an LLM can choose two explicit date ranges and issue two requests.
+
+### 7g. Result sizes are capped, and truncation is never silent
+
+The HTTP API allows `limit=1000` because a dashboard can scroll. A model
+cannot: thousands of rows dilute the evidence, cost tokens and make an answer
+less accurate. The AI caps are therefore deliberately tighter — 50 ranked
+products, 50 pairs, 50 menu rows, 25 attachments, 24 of the 168 weekday/hour
+cells — and every bundle reports the cap it applied, how many rows qualified
+and whether anything was withheld, plus a warning saying that statements about
+the full set are not supported by the evidence. Date-series operations return
+the requested range instead, bounded by the ≤366-day validation.
+
+### 7h. Why there is an endpoint
+
+`POST /analytics/query` exists for three reasons, none of them "it might be
+handy". The request body **is** the tool schema: FastAPI publishes the
+discriminated union, which is exactly the JSON Schema Commit 25 will hand the
+model, generated from the same Pydantic models that enforce it — so the two
+cannot drift. It lets an adversarial body be shown rejected by the real
+application rather than only by a direct call. And Commit 25's answer generator
+will consume evidence across this boundary, so the boundary is worth having
+under test a commit early.
+
+Getting this right exposed a second real defect: annotating the handler
+`request: AnalyticsRequest = Body(...)` made FastAPI read the outermost
+`FieldInfo` and **discard** `Field(discriminator="operation")`. The published
+schema advertised a bare `anyOf` and validation fell back to trying each member
+in turn. Wrapping the body in a `RootModel` keeps the discriminator where
+Pydantic can see it.
 
 **Interview question this answers:** *"What happens if someone prompt-injects
 your NL interface?"* — The attack surface is a validated JSON schema against a
-closed enum, not a query string. The worst case is a rejected request, not
-arbitrary SQL execution.
-
-Additional handling: LLM API failures degrade gracefully (the dashboard remains
-fully functional without the NL feature); requests are timed out and retried
-with backoff.
+closed enum, not a query string. The worst case is a rejected request or an
+"unknown product" answer, not arbitrary SQL execution. A model that has been
+successfully injected can still only ask for one of twelve aggregate
+operations over a ≤366-day window.
 
 ---
 
@@ -715,7 +868,8 @@ restaurant-intelligence/
 │   │   │   └── square.py
 │   │   ├── analytics/            # SQL aggregation queries
 │   │   ├── forecasting/          # baseline, model, backtest
-│   │   ├── nlq/                  # spec schema, builder, LLM client
+│   │   ├── nlq/                  # M7: operations, requests, resolution,
+│   │   │                         #     executor, evidence — no LLM client
 │   │   └── api/                  # route handlers
 │   ├── scripts/seed.py
 │   └── tests/
@@ -739,6 +893,12 @@ restaurant-intelligence/
 | M5 | Tue 1 Sep | Next.js dashboard with Recharts and date filtering |
 | M6 | Wed 2 Sep | Forecasting: baseline, model, backtest, evaluation writeup |
 | M7 | Thu 3 Sep | NL query pipeline, README, screenshots, deployment |
+
+M7 is in progress. Commit 24 (this one) builds the safe analytics substrate
+described in §7; Commit 25 adds LLM interpretation and grounded answer
+generation; Commit 26 adds the chat UI and final hardening. **Natural-language
+questions are not answered yet** — nothing in the system interprets a question
+or writes a sentence today.
 
 Deployment target: Railway or Fly.io (both handle FastAPI + Postgres simply).
 

@@ -9,6 +9,7 @@ from app.api.imports import router as imports_router
 from app.api.baskets import router as baskets_router
 from app.api.forecast import router as forecast_router
 from app.api.menu import router as menu_router
+from app.api.nlq import router as nlq_router
 from app.api.products import router as products_router
 from app.config import settings
 
@@ -30,3 +31,4 @@ app.include_router(products_router)
 app.include_router(baskets_router)
 app.include_router(menu_router)
 app.include_router(forecast_router)
+app.include_router(nlq_router)
