@@ -27,6 +27,15 @@ dependencies = [
     # Validation and configuration
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
+
+    # Forecasting (M6). scikit-learn brings numpy, scipy, joblib and
+    # threadpoolctl; that is the whole numerical stack this project needs.
+    #
+    # pandas is deliberately ABSENT. The forecasting series is at most 366
+    # rows of six integers, already assembled as dataclasses by the analytics
+    # layer — a DataFrame would add a large dependency, a second indexing
+    # model and a silent float coercion of integer pence, for nothing.
+    "scikit-learn>=1.5,<2",
 ]
 
 [project.optional-dependencies]

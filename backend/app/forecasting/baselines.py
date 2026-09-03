@@ -34,6 +34,18 @@ class Baseline(ABC):
     def forecast(self, history: Sequence[float], horizon: int) -> list[float]:
         """`horizon` values for the days immediately following `history`."""
 
+    def forecast_from(self, train, target, horizon: int) -> list[float]:
+        """Adapter onto the harness's forecaster interface.
+
+        A baseline needs only the target's past values; a model also needs the
+        calendar. Both are reachable from the observations, so the harness
+        passes observations and each forecaster takes what it needs — one
+        evaluation path, no parallel runner to drift out of step.
+        """
+        from app.forecasting.series import values
+
+        return self.forecast(values(train, target), horizon)
+
     def _check(self, history: Sequence[float], horizon: int) -> None:
         if horizon < 1:
             raise ValueError(f"horizon must be at least 1, got {horizon}")

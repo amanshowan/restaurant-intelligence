@@ -20,7 +20,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
-from app.forecasting.baselines import Baseline
+from typing import Protocol, runtime_checkable
+
+from app.forecasting.baselines import Baseline  # noqa: F401  (re-exported)
 from app.forecasting.metrics import ForecastMetrics, evaluate, pool
 from app.forecasting.series import (
     DailyObservation,
@@ -38,6 +40,25 @@ DEFAULT_HORIZON = 14
 #: baselines a full window plus room for the weekly cycle to be established,
 #: while still placing every fold in the later two-thirds of a 12-month year.
 DEFAULT_MIN_TRAIN_DAYS = 120
+
+
+@runtime_checkable
+class Forecaster(Protocol):
+    """Anything the harness can evaluate.
+
+    Receives the TRAINING observations and a horizon, and returns that many
+    values. It is never given the observations it is being scored against, so
+    leakage is prevented by the signature rather than by discipline. Both the
+    Commit 21 baselines and the Commit 22 models satisfy this.
+    """
+
+    name: str
+    #: Fewest training days the method needs.
+    min_history: int
+
+    def forecast_from(
+        self, train: Sequence[DailyObservation], target: Target, horizon: int
+    ) -> list[float]: ...
 
 
 @dataclass(frozen=True)
@@ -110,7 +131,11 @@ class FoldResult:
 
 @dataclass(frozen=True)
 class BaselineEvaluation:
-    """One baseline's performance on one target, across every fold."""
+    """One forecaster's performance on one target, across every fold.
+
+    Named for the baselines it was written for in Commit 21; it now carries
+    model results too, because they are evaluated identically.
+    """
 
     baseline: str
     target: Target
@@ -142,7 +167,7 @@ class BacktestReport:
 
 def run_backtest(
     series: Sequence[DailyObservation],
-    baselines: Sequence[Baseline],
+    forecasters: Sequence[Forecaster],
     *,
     horizon: int = DEFAULT_HORIZON,
     min_train_days: int = DEFAULT_MIN_TRAIN_DAYS,
@@ -160,16 +185,16 @@ def run_backtest(
             f"at least {min_train_days + horizon} are required"
         )
 
-    for baseline in baselines:
-        if min_train_days < baseline.min_history:
+    for forecaster in forecasters:
+        if min_train_days < forecaster.min_history:
             raise SeriesIntegrityError(
-                f"{baseline.name} needs {baseline.min_history} days of history "
+                f"{forecaster.name} needs {forecaster.min_history} days of history "
                 f"but the first fold trains on only {min_train_days}"
             )
 
     evaluations: list[BaselineEvaluation] = []
 
-    for baseline in baselines:
+    for forecaster in forecasters:
         for target in targets:
             fold_results: list[FoldResult] = []
 
@@ -177,9 +202,9 @@ def run_backtest(
                 train = fold.train(series)
                 test = fold.test(series)
 
-                # The baseline sees the training values ONLY. The actuals it is
-                # being scored against are never passed in.
-                predicted = baseline.forecast(values(train, target), fold.horizon)
+                # The forecaster sees the TRAINING observations only. The
+                # actuals it is scored against are never passed in.
+                predicted = forecaster.forecast_from(train, target, fold.horizon)
                 actual = [float(v) for v in values(test, target)]
 
                 fold_results.append(
@@ -193,7 +218,7 @@ def run_backtest(
 
             evaluations.append(
                 BaselineEvaluation(
-                    baseline=baseline.name,
+                    baseline=forecaster.name,
                     target=target,
                     overall=pool([r.metrics for r in fold_results]),
                     folds=fold_results,
