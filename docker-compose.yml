@@ -1,4 +1,8 @@
-# Local development stack: PostgreSQL + the FastAPI backend.
+# Local development stack: PostgreSQL, the FastAPI backend and the Next.js
+# dashboard.
+#
+# Docker is the ONLY host prerequisite. Neither Python nor Node is installed
+# on the host; both toolchains live in their service's image.
 #
 # Usage:
 #   cp .env.example .env      # once, then adjust if you like
@@ -97,5 +101,88 @@ services:
         # runtime; that needs connection retry in the application layer.
         condition: service_healthy
 
+  web:
+    # The Next.js dashboard. Built from our own source; Node is deliberately
+    # NOT a host prerequisite, so this service is the only place it exists.
+    build:
+      context: ./frontend
+      # The image also defines a production build + runtime. Development stops
+      # at `dev`, which carries the dev dependencies the other stages drop.
+      target: dev
+    # Overrides the image CMD only to be explicit about what local development
+    # runs. --hostname 0.0.0.0 lives in the npm script: inside a container the
+    # default of localhost means that container, so the server would be
+    # unreachable from the host no matter what ports are published below.
+    command: ["npm", "run", "dev"]
+    environment:
+      # SERVER-ONLY. Read by next.config.ts to target the rewrite, so it is
+      # never sent to the browser. `api` is the Compose service name, resolved
+      # by Compose's internal DNS and meaningless outside this network — which
+      # is exactly why it must not leak into client-side code. Publishing it as
+      # NEXT_PUBLIC_* would inline it into the JavaScript bundle and every
+      # browser request to http://api:8000 would fail to resolve.
+      API_UPSTREAM_URL: http://api:8000
+      # Browser-visible base. Same-origin by design: the browser calls
+      # localhost:3000/api/..., the Next server forwards it to the API, and no
+      # cross-origin request is ever made — so the backend needs no CORS policy.
+      NEXT_PUBLIC_API_BASE_URL: /api
+      # macOS and Windows bind mounts do not deliver inotify events into the
+      # container, so file watching silently never fires and hot reload appears
+      # broken. Polling costs a little CPU and is the standard trade.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      # Bound to 127.0.0.1 like db and api, for the same reason: without a host
+      # address Docker publishes on every interface, putting the dashboard on
+      # whatever network this laptop is attached to.
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    volumes:
+      # Bind mount for hot reload: edits saved on the host appear immediately
+      # inside the container.
+      - ./frontend:/app
+      # ...but that bind mount would also shadow /app/node_modules with the
+      # host directory, which does not exist — Node is not installed on the
+      # host. This named volume masks that one path so the container keeps the
+      # dependencies `npm ci` installed into the image.
+      #
+      # Trade-off: the volume outlives the image, so it does NOT pick up a
+      # changed package-lock.json on its own. After changing dependencies:
+      #   docker compose down -v web && docker compose up -d --build web
+      - frontend_node_modules:/app/node_modules
+      # Likewise for the build cache. Keeping .next off the bind mount avoids
+      # writing thousands of small files across the macOS filesystem boundary,
+      # which is the single biggest cause of a slow dev server here.
+      - frontend_next_cache:/app/.next
+    healthcheck:
+      # Requests the dashboard itself. `next dev` compiles a route on first
+      # request, so this is what makes `docker compose up --wait` return when
+      # the page is actually servable rather than the moment the process
+      # starts — the difference between a working URL and a spinning tab.
+      #
+      # Any response below 500 counts: a 404 would still prove the server is
+      # answering. The generous start_period covers that first compile.
+      #
+      # `node -e` rather than curl: the Alpine node image ships neither curl
+      # nor wget, and adding one to a dev image for a healthcheck is a poor
+      # trade when the runtime already speaks HTTP.
+      test: ["CMD", "node", "-e",
+             "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      api:
+        # STARTUP ordering only, and deliberately not more than that. The rewrite
+        # target is resolved per-request at runtime, so a dev server started
+        # before the API is merely a dashboard whose first request fails and
+        # whose next one succeeds. Waiting for health here buys an orderly
+        # `up`, not runtime resilience — that belongs in the request path, and
+        # is why the API client surfaces an unreachable upstream as a readable
+        # error rather than a stack trace.
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  frontend_node_modules:
+  frontend_next_cache:

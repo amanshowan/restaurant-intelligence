@@ -1,0 +1,22 @@
+# Keeps the build context small and prevents host-only state leaking into the
+# image.
+#
+# node_modules is the important one: the host copy is installed for the host's
+# platform, and npm packages can contain natively-compiled binaries. Copying it
+# into a linux/amd64 image would either overwrite the correct dependencies or
+# break at runtime with an obscure "invalid ELF header". The image installs its
+# own from package-lock.json instead.
+node_modules/
+.next/
+out/
+build/
+coverage/
+
+# Never bake environment files into an image layer.
+.env
+.env.*
+
+.git/
+.DS_Store
+*.tsbuildinfo
+npm-debug.log*

@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ *
+ * One restrained light theme, stated explicitly rather than inherited from the
+ * viewer's preference. A dashboard read next to a till and a paper invoice
+ * wants consistent contrast, and a half-considered dark mode reads worse than
+ * no dark mode. `color-scheme: light` also stops the browser inverting the
+ * native date inputs, which would otherwise be the only dark thing on screen.
+ *
+ * The palette is deliberately near-neutral. Colour is reserved for meaning:
+ * one accent for the current location and focus, and nothing decorative.
+ */
+@theme {
+  --color-canvas: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #fafbfc;
+
+  --color-line: #e2e6ea;
+  --color-line-strong: #ccd3da;
+
+  --color-ink: #121820;
+  --color-ink-muted: #56616d;
+  --color-ink-subtle: #808b97;
+
+  --color-accent: #0d5b8a;
+  --color-accent-soft: #ecf3f8;
+
+  --color-positive: #0f6b45;
+  --color-negative: #a13322;
+
+  /*
+   * A system stack rather than a webfont. `next/font/google` would add a
+   * network fetch to every production build — a build that fails on an
+   * offline or restricted network is a poor trade for a typeface no one will
+   * identify. The stack below is what business software on each platform
+   * already uses.
+   */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Figures are compared down a column, so their digits must share a width.
+ * Without this, "1,111" is visibly narrower than "8,888" and a column of
+ * takings looks ragged.
+ */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* One focus treatment everywhere, including keyboard navigation of the nav. */
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

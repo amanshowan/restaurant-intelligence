@@ -12,8 +12,10 @@ the operational data existed but was effectively unusable.
 
 > **Status:** the ingestion pipeline and the analytics API — revenue, timing,
 > channel, product and basket — are complete and covered by tests. The
-> dashboard, forecasting and natural-language query are the next milestones.
-> This README describes only what runs today.
+> dashboard now exists as a Next.js app, with the Overview page reading live
+> figures; its remaining sections are placeholders. Forecasting and
+> natural-language query are the next milestones. This README describes only
+> what runs today.
 
 ---
 
@@ -101,7 +103,10 @@ Design decisions, alternatives and trade-offs are documented in
 - **Docker Desktop** (or Docker Engine + Compose v2)
 - **curl** and **Python 3** for the demo script
 
-Nothing else. Postgres and the Python toolchain run in containers.
+Nothing else — and deliberately so. **Node.js is not a prerequisite.**
+Postgres, the Python toolchain and the Node toolchain each run in their own
+container, so nothing needs installing on the host to build, test or lint any
+part of this project.
 
 ## Setup
 
@@ -112,9 +117,15 @@ cp .env.example .env          # local dev values; .env is gitignored
 docker compose up -d --wait
 ```
 
-`--wait` blocks until Postgres passes its health check and the API is up. First
-run pulls images and builds, so allow a few minutes; subsequent starts are
-seconds.
+`--wait` blocks until every service passes its health check — Postgres ready,
+the API up, and the dashboard actually serving a page rather than merely
+started. First run pulls images and builds, so allow a few minutes; subsequent
+starts are seconds.
+
+| | |
+|---|---|
+| **Dashboard** | **<http://localhost:3000>** |
+| API docs | <http://localhost:8000/docs> |
 
 ```bash
 docker compose down       # stop, keeping the database
@@ -138,10 +149,27 @@ docker compose exec api alembic check          # models and migrations agree?
 docker compose exec api python -m pytest
 ```
 
-The suite runs against the real PostgreSQL service — testing against SQLite
+The backend suite runs against the real PostgreSQL service — testing against SQLite
 would not exercise the foreign-key policies, composite constraints and
 NULL-distinctness rules the design depends on. It builds its schema by running
 the migrations, so a migration that drifts from the models fails the suite.
+
+The frontend's checks run in its own container, so they need no host Node:
+
+```bash
+docker compose run --rm --no-deps web npm test        # vitest
+docker compose run --rm --no-deps web npm run typecheck
+docker compose run --rm --no-deps web npm run lint
+```
+
+`next build` no longer runs linting as of Next.js 16, so `lint` is a separate
+step rather than something a build would catch. To verify a full production
+build, build the image's production stage — which compiles with
+`NODE_ENV=production` and fails on a type error:
+
+```bash
+docker build --target runner ./frontend
+```
 
 ## API docs
 
@@ -275,6 +303,54 @@ margin or price-elasticity data.
 
 Full metric definitions are in [ARCHITECTURE.md §5a](ARCHITECTURE.md).
 
+## Dashboard
+
+The Next.js app at **<http://localhost:3000>** opens on **Overview**: net sales,
+payment orders, average order value, net units, gross sales and discounts for a
+date range, read live from `/analytics/overview`.
+
+It opens on the **last complete calendar month**, computed from the clock in
+`Europe/London`. The current month is always partial, and a rolling 30 days
+straddles two months — neither is the unit a business reconciles in. Nothing
+about the range is hard-coded to a month that happens to hold data.
+
+> The backend exposes no "what period do you actually hold data for?" endpoint,
+> so the dashboard cannot open on the imported range. A range with no data
+> renders as a legitimate zero period, which currently looks the same as a
+> month the business was closed. A dataset-aware range selector needs that
+> endpoint first.
+
+### The browser never talks to the API directly
+
+```
+browser  →  localhost:3000/api/analytics/overview     same origin
+         →  Next.js server  (rewrite, server-side)
+         →  http://api:8000/analytics/overview        Compose network
+         →  FastAPI
+```
+
+Every browser request is same-origin, so no preflight happens, no
+`Access-Control-Allow-Origin` list has to be kept in step with each
+environment, and **the backend carries no CORS configuration at all**.
+
+Two environment variables, set in `docker-compose.yml`:
+
+| Variable | Value | Visibility |
+|---|---|---|
+| `API_UPSTREAM_URL` | `http://api:8000` | **Server only.** Read by `next.config.ts` to target the rewrite. |
+| `NEXT_PUBLIC_API_BASE_URL` | `/api` | Public — inlined into the client bundle. A path, nothing more. |
+
+`api` is a Compose service name that resolves only inside the Compose network.
+It is deliberately *not* a `NEXT_PUBLIC_*` variable: that would inline an
+internal hostname into every visitor's JavaScript, where it is both a leak and
+an address no browser could resolve.
+
+One consequence worth knowing: when the API is unreachable, the Next.js rewrite
+answers with a plain-text `HTTP 500`, not a gateway status. The client
+therefore identifies an unreachable backend by the *absence of the API's error
+envelope* rather than by status code, and says "Cannot reach the API" instead
+of blaming the request.
+
 ## Project layout
 
 ```
@@ -287,6 +363,11 @@ backend/
     api/          FastAPI routes
   alembic/        migrations
   tests/          pytest suite
+frontend/
+  src/
+    app/          App Router pages — one per dashboard section
+    components/   shell, page furniture, the Overview dashboard
+    lib/          typed API client, formatting, date-range rules (+ tests)
 demo/square-sample/   synthetic Square exports (safe, committed)
 data/                 real exports go here — gitignored, never committed
 ```
@@ -299,9 +380,13 @@ on every push and pull request.
 
 ## Not built yet
 
-The Next.js dashboard, demand forecasting and the natural-language query
-interface are planned. Their designs are in [ARCHITECTURE.md](ARCHITECTURE.md);
-none of them exist in the code today.
+Demand forecasting and the natural-language query interface are planned. Their
+designs are in [ARCHITECTURE.md](ARCHITECTURE.md); neither exists in the code
+today.
+
+Within the dashboard, only Overview reads live data. Trading, Products, Basket
+Analysis and Imports are navigable placeholders that name the endpoints they
+will read — every one of which the API already serves.
 
 Deliberately absent, and not planned without the data to support them: product
 costs, margins, price recommendations and elasticity modelling. The system
