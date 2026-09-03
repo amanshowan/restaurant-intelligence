@@ -46,7 +46,11 @@ from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.adapters.base import IssueCode, ParseResult, RowIssue, Severity, SourceError
 from app.adapters.parsing import parse_money_to_pence
-from app.adapters.square import SquareAdapter, attach_items
+from app.adapters.square import (
+    SquareAdapter,
+    attach_items,
+    resolve_zero_value_orders,
+)
 from app.config import BUSINESS_TZ, UTC
 from app.models import (
     ImportBatch,
@@ -304,6 +308,24 @@ class SquareImportService:
         tx_result = parsed[ImportFileRole.TRANSACTIONS]
         item_result = parsed[ImportFileRole.ITEMS_DETAIL]
         summary_result = parsed.get(ImportFileRole.ITEMS_SUMMARY)
+
+        # Settle the held-back £0.00 payments first: a zero-value transaction
+        # that served something is a real order, and it must exist before the
+        # channel check runs so an unclassifiable one is caught like any other.
+        unresolvable = resolve_zero_value_orders(tx_result, item_result.items)
+        if unresolvable:
+            raise UnresolvedChannelError(
+                f"{len(unresolvable)} zero-value transaction(s) carry item lines "
+                f"but no derivable channel, so they are real orders that cannot "
+                f"be classified: "
+                + "; ".join(
+                    f"row {c.row_number} (transaction {c.source_order_id}): "
+                    f"{c.channel_reason}"
+                    for c in unresolvable
+                )
+                + ". Add the combination to the Source/Dining Option mapping "
+                "and retry."
+            )
 
         # BEFORE anything is built or written. An unmapped channel is a gap in
         # our understanding of the source, and continuing would drop real

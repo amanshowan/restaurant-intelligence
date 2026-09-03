@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.adapters.base import IssueCode
+from app.analytics.service import AnalyticsService
 from app.models import (
     ImportBatch,
     ImportFile,
@@ -767,3 +768,255 @@ def test_line_discount_difference_is_a_conflicting_order(
             ],
             label="second",
         ))
+
+
+# --- zero-value orders that served something ---------------------------------
+#
+# Square records a no-sale and a real order served for nothing identically at
+# the transaction level: £0.00 gross, net and discount. Only the items file
+# distinguishes them. Dropping both lost the served unit from unit counts,
+# product analytics and basket co-occurrence, and surfaced much later as a
+# one-unit reconciliation mismatch — exactly what happened to July 2026.
+
+
+def zero_value_import(square_files, items, label="z", tx_id="TX-Z", **tx_overrides):
+    """A £0.00 payment, with whatever item lines the caller supplies."""
+    tx = {"Transaction ID": tx_id, "Payment ID": f"PAY-{tx_id}",
+          "Gross Sales": "£0.00", "Net Sales": "£0.00", "Discounts": "£0.00",
+          "Total Collected": "£0.00"}
+    tx.update(tx_overrides)
+    return square_files(transactions=[transaction_row(**tx)], items=items, label=label)
+
+
+def test_zero_value_no_sale_with_no_items_is_still_skipped(
+    session_factory, square_files
+):
+    """The deliberate exclusion, unchanged. 446 of the 447 zero-value rows in
+    the real trading year are exactly this."""
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-OK", "Payment ID": "PAY-OK",
+                               "Gross Sales": "£3.65", "Net Sales": "£3.65"}),
+            transaction_row(**{"Transaction ID": "TX-NOSALE", "Payment ID": "PAY-NS",
+                               "Gross Sales": "£0.00", "Net Sales": "£0.00"}),
+        ],
+        items=[item_row(**{"Transaction ID": "TX-OK", "Product Sales": "£3.65"})],
+    )
+
+    outcome = SquareImportService(session_factory).run(request)
+
+    assert outcome.orders_created == 1
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(Order)) == 1
+        assert s.scalar(select(Order.source_order_id)) == "TX-OK"
+        batch = s.get(ImportBatch, outcome.batch_id)
+        assert "zero_value_transaction" in batch.error_log
+
+
+def test_zero_value_payment_with_a_real_item_is_retained(
+    session_factory, square_files
+):
+    """A glass of tap water is a sale. It cost nothing; it still happened."""
+    request = zero_value_import(
+        square_files,
+        items=[item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                           "Price Point Name": "Regular", "Qty": "1.0",
+                           "Product Sales": "£0.00", "Net Sales": "£0.00"})],
+    )
+
+    outcome = SquareImportService(session_factory).run(request)
+
+    assert outcome.orders_created == 1
+    with session_factory() as s:
+        order = s.scalar(select(Order))
+        assert order.source_order_id == "TX-Z"
+        assert order.event_type is OrderEventType.PAYMENT
+        assert order.net_amount == 0
+        assert order.gross_amount == 0
+        # The unit is the whole point.
+        assert order.item_count == 1
+        assert s.scalar(select(func.count()).select_from(OrderItem)) == 1
+        assert s.scalar(select(Product.name)) == "Tap Water"
+
+
+def test_retained_zero_value_order_is_reported_not_silent(
+    session_factory, square_files
+):
+    """Retention is a decision about the data and is recorded as one."""
+    outcome = SquareImportService(session_factory).run(
+        zero_value_import(
+            square_files,
+            items=[item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                               "Product Sales": "£0.00"})],
+        )
+    )
+    with session_factory() as s:
+        batch = s.get(ImportBatch, outcome.batch_id)
+        assert "zero_value_order_retained" in batch.error_log
+        # It is no longer counted as a skipped row: it became an order.
+        tx_file = s.scalar(
+            select(ImportFile).where(ImportFile.role == ImportFileRole.TRANSACTIONS)
+        )
+        assert tx_file.rows_skipped == 0
+        assert tx_file.rows_imported == 1
+
+
+def test_multiple_zero_priced_items_are_all_retained(session_factory, square_files):
+    request = zero_value_import(
+        square_files,
+        items=[
+            item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                        "Price Point Name": "Regular", "Qty": "2.0",
+                        "Product Sales": "£0.00"}),
+            item_row(**{"Transaction ID": "TX-Z", "Item": "Birthday Candle",
+                        "Price Point Name": "", "Qty": "1.0",
+                        "Product Sales": "£0.00"}),
+        ],
+    )
+
+    outcome = SquareImportService(session_factory).run(request)
+
+    assert outcome.orders_created == 1
+    with session_factory() as s:
+        assert s.scalar(select(func.count()).select_from(OrderItem)) == 2
+        assert s.scalar(select(Order.item_count)) == 3      # 2 + 1
+        assert s.scalar(select(func.sum(OrderItem.line_total))) == 0
+
+
+def test_retained_zero_value_order_contributes_no_money_but_real_counts(
+    session_factory, square_files
+):
+    """£0 of revenue, one more paid order, and the units it served."""
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-PAID", "Payment ID": "PAY-P",
+                               "Gross Sales": "£10.00", "Net Sales": "£10.00"}),
+            transaction_row(**{"Transaction ID": "TX-Z", "Payment ID": "PAY-Z",
+                               "Gross Sales": "£0.00", "Net Sales": "£0.00"}),
+        ],
+        items=[
+            item_row(**{"Transaction ID": "TX-PAID", "Item": "Caffe Latte",
+                        "Qty": "1.0", "Product Sales": "£10.00"}),
+            item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                        "Qty": "1.0", "Product Sales": "£0.00"}),
+        ],
+    )
+
+    SquareImportService(session_factory).run(request)
+
+    with session_factory() as s:
+        assert s.scalar(select(func.sum(Order.net_amount))) == 1000     # unchanged
+        assert s.scalar(
+            select(func.count()).select_from(Order).where(
+                Order.event_type == OrderEventType.PAYMENT
+            )
+        ) == 2                                                          # both count
+        assert s.scalar(select(func.sum(Order.item_count))) == 2        # both units
+
+
+def test_zero_priced_product_is_visible_to_product_analytics(
+    session_factory, square_files
+):
+    """It must reach the product tables, or the menu is misrepresented."""
+    SquareImportService(session_factory).run(
+        zero_value_import(
+            square_files,
+            items=[item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                               "Price Point Name": "Regular", "Qty": "1.0",
+                               "Product Sales": "£0.00",
+                               "Category": "Cold Drinks Menu"})],
+        )
+    )
+
+    ranking = AnalyticsService(session_factory).products(
+        date(2026, 8, 1), date(2026, 8, 31)
+    )
+    rows = {(s.totals.name, s.totals.variation): s.totals for s in ranking.products}
+
+    assert ("Tap Water", "Regular") in rows
+    totals = rows[("Tap Water", "Regular")]
+    assert totals.net_units == 1
+    assert totals.net_sales_pence == 0
+    assert totals.payment_order_count == 1
+
+
+def test_zero_priced_item_participates_in_basket_pairs(session_factory, square_files):
+    """Tap Water co-occurs constantly in the real data; excluding it would
+    misstate what is bought together."""
+    request = zero_value_import(
+        square_files,
+        items=[
+            item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                        "Price Point Name": "Regular", "Qty": "1.0",
+                        "Product Sales": "£0.00"}),
+            item_row(**{"Transaction ID": "TX-Z", "Item": "Poached Egg",
+                        "Price Point Name": "", "Qty": "1.0",
+                        "Product Sales": "£0.00"}),
+        ],
+    )
+    SquareImportService(session_factory).run(request)
+
+    analysis = AnalyticsService(session_factory).product_pairs(
+        date(2026, 8, 1), date(2026, 8, 31)
+    )
+    names = {
+        frozenset({p.counts.a.name, p.counts.b.name}) for p in analysis.pairs
+    }
+    assert frozenset({"Tap Water", "Poached Egg"}) in names
+
+
+def test_refunds_are_unaffected_by_the_zero_value_change(
+    session_factory, square_files
+):
+    """A refund never took the zero-value path and still does not."""
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-P", "Payment ID": "PAY-1",
+                               "Gross Sales": "£10.00", "Net Sales": "£10.00"}),
+            transaction_row(**{"Transaction ID": "TX-R", "Payment ID": "PAY-1",
+                               "Event Type": "Refund", "Gross Sales": "-£10.00",
+                               "Net Sales": "-£10.00"}),
+        ],
+        items=[item_row(**{"Transaction ID": "TX-P", "Product Sales": "£10.00"})],
+    )
+
+    SquareImportService(session_factory).run(request)
+
+    with session_factory() as s:
+        orders = {o.source_order_id: o for o in s.scalars(select(Order)).all()}
+        assert orders["TX-R"].event_type is OrderEventType.REFUND
+        assert s.scalar(select(func.sum(Order.net_amount))) == 0
+
+
+def test_ordinary_positive_orders_are_untouched(session_factory, square_files):
+    """The common path must not have moved."""
+    outcome = SquareImportService(session_factory).run(simple_import(square_files))
+
+    assert outcome.orders_created == 1
+    with session_factory() as s:
+        assert s.scalar(select(Order.net_amount)) == 1095
+        assert s.scalar(select(func.count()).select_from(OrderItem)) == 2
+        batch = s.get(ImportBatch, outcome.batch_id)
+        assert "zero_value_order_retained" not in (batch.error_log or "")
+
+
+def test_zero_value_order_with_items_but_no_channel_is_rejected(
+    session_factory, square_files
+):
+    """A real order we cannot classify fails loudly rather than vanishing.
+
+    Composes with the unresolved-channel hotfix: promotion happens first, so
+    an unclassifiable £0 order is caught like any other unclassifiable order.
+    """
+    request = zero_value_import(
+        square_files,
+        items=[item_row(**{"Transaction ID": "TX-Z", "Item": "Tap Water",
+                           "Product Sales": "£0.00"})],
+        **{"Source": "Mystery Co"},
+    )
+
+    with pytest.raises(UnresolvedChannelError) as caught:
+        SquareImportService(session_factory).run(request)
+
+    assert "TX-Z" in str(caught.value)
+    assert counts(session_factory)["orders"] == 0

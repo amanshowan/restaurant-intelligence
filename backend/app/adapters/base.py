@@ -36,6 +36,9 @@ class IssueCode(str, Enum):
 
     UNRESOLVED_CHANNEL = "unresolved_channel"
     ZERO_VALUE_TRANSACTION = "zero_value_transaction"
+    #: A £0.00 payment KEPT because it carries item lines — a real order served
+    #: at no charge, not a no-sale. Reported so the retention is visible.
+    ZERO_VALUE_ORDER_RETAINED = "zero_value_order_retained"
     AMBIGUOUS_LOCAL_TIME = "ambiguous_local_time"
     NONEXISTENT_LOCAL_TIME = "nonexistent_local_time"
     UNKNOWN_TIME_ZONE = "unknown_time_zone"
@@ -86,6 +89,11 @@ class ParseResult:
     items: list = field(default_factory=list)
     summary_rows: list = field(default_factory=list)
     issues: list[RowIssue] = field(default_factory=list)
+    #: Rows whose fate cannot be decided from this file alone. A £0.00 payment
+    #: is a no-sale if nothing was served and a real order if something was,
+    #: and only the ITEMS file knows which — so the decision is deferred until
+    #: both have been read. See `resolve_zero_value_orders`.
+    zero_value_candidates: list = field(default_factory=list)
 
     @property
     def rows_skipped(self) -> int:

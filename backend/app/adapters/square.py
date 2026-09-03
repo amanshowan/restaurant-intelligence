@@ -135,6 +135,24 @@ class _PreparedTransaction:
 
 
 @dataclass(frozen=True)
+class _ZeroValueCandidate:
+    """A £0.00 payment held back until the items file can settle its fate.
+
+    Square records a genuine no-sale (a till opened, nothing served) and a real
+    order that happened to cost nothing — a glass of tap water — identically at
+    the transaction level: £0.00 gross, £0.00 net, £0.00 discount. The only
+    thing that distinguishes them is whether any item was served, and that
+    lives in a different file.
+    """
+
+    row_number: int
+    source_order_id: str
+    #: The order this would become. None when its channel could not be derived.
+    order: CanonicalOrder | None
+    channel_reason: str
+
+
+@dataclass(frozen=True)
 class ChannelDerivation:
     channel: Channel | None
     reason: str
@@ -406,6 +424,24 @@ class SquareAdapter(SourceAdapter):
         row = item.row
 
         if item.net == 0 and item.discount == 0:
+            # HELD BACK, not dropped. Whether this is a no-sale or a real order
+            # served for nothing depends on the items file, which this call has
+            # not seen. The skip issue is recorded now so a no-sale behaves
+            # exactly as it always has; `resolve_zero_value_orders` withdraws it
+            # for the ones that turn out to be real.
+            zero_derivation = derive_channel(row.source, row.dining_option)
+            result.zero_value_candidates.append(
+                _ZeroValueCandidate(
+                    row_number=item.row_number,
+                    source_order_id=row.transaction_id.strip(),
+                    order=(
+                        self._build_order(item, zero_derivation.channel)
+                        if zero_derivation.channel is not None
+                        else None
+                    ),
+                    channel_reason=zero_derivation.reason,
+                )
+            )
             result.issues.append(
                 RowIssue(item.row_number, IssueCode.ZERO_VALUE_TRANSACTION, Severity.SKIP,
                          "zero-value payment excluded from analytical orders",
@@ -559,6 +595,66 @@ class SquareAdapter(SourceAdapter):
         """Reconciliation only. Produces no canonical sales records, ever."""
         for raw in rows:
             result.summary_rows.append(SquareSummaryRow.model_validate(raw))
+
+
+def resolve_zero_value_orders(
+    tx_result: ParseResult, items: list[CanonicalOrderItem]
+) -> list[_ZeroValueCandidate]:
+    """Settle the £0.00 payments now that the items file is known.
+
+    A zero-value transaction that served NOTHING is a no-sale and stays
+    excluded — that exclusion is deliberate and unchanged, and it is what 446
+    of the 447 zero-value rows in the real trading year are.
+
+    A zero-value transaction that served SOMETHING is a real order that
+    happened to cost nothing. Square's Items Summary counts the unit, and so
+    must we: dropping it lost the sale from unit counts, from product analytics
+    and from basket co-occurrence, and then surfaced as a one-unit
+    reconciliation mismatch that named the wrong cause entirely.
+
+    Promotion mutates `tx_result` in place — the order joins `orders` and its
+    skip issue is withdrawn, so the file's own rows_imported/rows_skipped
+    counts stay truthful.
+
+    Returns the candidates that are real orders but whose channel could not be
+    derived; the caller decides what to do about those. They are not silently
+    kept, because an order with no channel would distort the channel mix.
+    """
+    if not tx_result.zero_value_candidates:
+        return []
+
+    served = {item.source_order_id for item in items}
+    unresolvable: list[_ZeroValueCandidate] = []
+
+    for candidate in tx_result.zero_value_candidates:
+        if candidate.source_order_id not in served:
+            continue  # a genuine no-sale; the existing skip stands
+        if candidate.order is None:
+            unresolvable.append(candidate)
+            continue
+
+        tx_result.orders.append(candidate.order)
+        tx_result.issues = [
+            issue
+            for issue in tx_result.issues
+            if not (
+                issue.code is IssueCode.ZERO_VALUE_TRANSACTION
+                and issue.row_number == candidate.row_number
+            )
+        ]
+        tx_result.issues.append(
+            RowIssue(
+                candidate.row_number,
+                IssueCode.ZERO_VALUE_ORDER_RETAINED,
+                Severity.WARN,
+                "zero-value payment retained: it carries item lines, so it is a "
+                "real order served at no charge, not a no-sale",
+                None,
+                candidate.source_order_id,
+            )
+        )
+
+    return unresolvable
 
 
 def attach_items(
