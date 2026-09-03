@@ -241,6 +241,63 @@ def test_conflicting_order_returns_409(client, export_set, session_factory, tmp_
         assert s.scalar(select(Order.net_amount)) == 365      # unchanged
 
 
+def test_unresolved_channel_returns_422_with_its_own_code(
+    client, export_set, session_factory, tmp_path
+):
+    """An unmappable Source/Dining Option is reported AS ITSELF.
+
+    Distinct from reconciliation_failed on purpose: the source is telling us
+    about a fulfilment combination we do not cover, and calling that an
+    arithmetic mismatch sends the reader to audit a file that is correct.
+    """
+    tx = write_square_export(
+        tmp_path / "unmapped.csv", TRANSACTION_COLUMNS,
+        [transaction_row(**{"Transaction ID": "TX-1", "Net Sales": "£3.65",
+                            "Gross Sales": "£3.65", "Dining Option": "Kerbside"})],
+    )
+    it = write_square_export(
+        tmp_path / "unmapped-items.csv", ITEM_COLUMNS,
+        [item_row(**{"Transaction ID": "TX-1", "Product Sales": "£3.65"})],
+    )
+    response = client.post(ENDPOINT, files=[
+        ("transactions", (tx.name, tx.read_bytes(), "text/csv")),
+        ("items", (it.name, it.read_bytes(), "text/csv")),
+    ])
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "unresolved_channel"
+    # Enough to extend the mapping from the response alone.
+    assert "Kerbside" in body["detail"].lower() or "kerbside" in body["detail"].lower()
+    assert "TX-1" in body["detail"]
+
+    counts = _counts(session_factory)
+    assert counts["orders"] == 0 and counts["items"] == 0 and counts["products"] == 0
+
+
+def test_unresolved_channel_error_carries_no_pii(client, export_set, tmp_path):
+    """The fixtures carry customer, card and staff columns throughout; none of
+    them may appear in the message that names the unmapped combination."""
+    tx = write_square_export(
+        tmp_path / "pii.csv", TRANSACTION_COLUMNS,
+        [transaction_row(**{"Transaction ID": "TX-1", "Net Sales": "£3.65",
+                            "Gross Sales": "£3.65", "Dining Option": "Kerbside"})],
+    )
+    it = write_square_export(
+        tmp_path / "pii-items.csv", ITEM_COLUMNS,
+        [item_row(**{"Transaction ID": "TX-1", "Product Sales": "£3.65"})],
+    )
+    response = client.post(ENDPOINT, files=[
+        ("transactions", (tx.name, tx.read_bytes(), "text/csv")),
+        ("items", (it.name, it.read_bytes(), "text/csv")),
+    ])
+
+    text = response.text
+    for secret in ("A Person", "CUST-9", "Visa", "4242", "A Barista"):
+        assert secret not in text
+    assert "Traceback" not in text
+
+
 def test_reconciliation_failure_returns_422_and_writes_nothing(
     client, export_set, session_factory
 ):

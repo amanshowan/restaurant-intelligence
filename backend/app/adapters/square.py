@@ -92,11 +92,24 @@ _PICKUP_SUFFIX = " pickup"
 
 #: Dining options, as a normalised set, mapped to a canonical channel. A
 #: combined "Eat in, Takeaway" order is genuinely mixed rather than either.
+#: Square writes a comma-separated list when one order spans more than one
+#: fulfilment mode, so the key is the SET of options, not the raw string.
+#:
+#: A combination that spans two different single-option channels is MIXED:
+#: "eat in" and "takeaway" are both IN_STORE while "pick up" is COLLECTION, so
+#: any pairing that crosses that boundary describes an order fulfilled two ways
+#: and belongs in neither. Folding it into either one would put revenue in a
+#: channel the source does not support.
 _DINING_OPTION_CHANNELS: dict[frozenset[str], Channel] = {
     frozenset({"eat in"}): Channel.IN_STORE,
     frozenset({"takeaway"}): Channel.IN_STORE,
     frozenset({"eat in", "takeaway"}): Channel.MIXED,
     frozenset({"pick up"}): Channel.COLLECTION,
+    # Both found in the real 12-month export set: 22 orders carry
+    # "Eat In, Pick Up" and 3 carry "Pick Up, Takeaway". Each spans the
+    # in-store/collection boundary, so each is MIXED by the rule above.
+    frozenset({"eat in", "pick up"}): Channel.MIXED,
+    frozenset({"pick up", "takeaway"}): Channel.MIXED,
 }
 
 #: Heuristic. Square has no field marking a product as a gift voucher, so it is

@@ -30,6 +30,12 @@ from app.models.enums import Channel
         ("Register", "Eat in, Takeaway", Channel.MIXED),
         ("Register", "Takeaway, Eat in", Channel.MIXED),
         ("Point of Sale", "Eat in, Takeaway", Channel.MIXED),
+        # Combinations that span the in-store/collection boundary. Both occur
+        # in the real 12-month export set and belong to neither single channel.
+        ("Point of Sale", "Eat In, Pick Up", Channel.MIXED),
+        ("Register", "Pick Up, Eat in", Channel.MIXED),
+        ("Point of Sale", "Pick Up, Takeaway", Channel.MIXED),
+        ("Register", "Takeaway, Pick Up", Channel.MIXED),
     ],
 )
 def test_agreed_mapping(source, dining_option, expected):
@@ -70,3 +76,33 @@ def test_square_online_still_honours_an_explicit_dining_option():
     """A dining option IS evidence, and takes priority over the fallback."""
     assert derive_channel("Square Online", "Pick Up").channel is Channel.COLLECTION
     assert derive_channel("Square Online", "Eat in").channel is Channel.IN_STORE
+
+
+@pytest.mark.parametrize(
+    "dining_option,expected",
+    [
+        ("Eat In", Channel.IN_STORE),
+        ("Takeaway", Channel.IN_STORE),
+        ("Pick Up", Channel.COLLECTION),
+        ("Eat In, Takeaway", Channel.MIXED),
+        ("Eat In, Pick Up", Channel.MIXED),
+        ("Pick Up, Takeaway", Channel.MIXED),
+    ],
+)
+def test_every_dining_option_seen_in_the_real_year_resolves(dining_option, expected):
+    """The complete set of Dining Option values in the 12-month export set.
+
+    A scan of all twelve monthly Transactions exports found exactly these six.
+    Two of them — "Eat In, Pick Up" and "Pick Up, Takeaway" — were unmapped and
+    silently cost 81 units and £522.29 across the year before this was fixed,
+    surfacing only as a reconciliation mismatch. If Square adds a seventh, this
+    list is the place it should be recorded.
+    """
+    assert derive_channel("Point of Sale", dining_option).channel is expected
+
+
+def test_single_option_channels_are_unchanged_by_the_mixed_additions():
+    """The additions must not have altered what a lone option means."""
+    assert derive_channel("Register", "Eat in").channel is Channel.IN_STORE
+    assert derive_channel("Register", "Takeaway").channel is Channel.IN_STORE
+    assert derive_channel("Register", "Pick Up").channel is Channel.COLLECTION

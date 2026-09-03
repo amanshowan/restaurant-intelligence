@@ -22,6 +22,7 @@ from app.services.importer import (
     ImportRejected,
     ReconciliationError,
     SquareImportService,
+    UnresolvedChannelError,
     file_checksum,
 )
 from tests.conftest import item_row, summary_row, transaction_row
@@ -532,14 +533,17 @@ def test_refunds_are_persisted_with_event_type_and_payment_id(
 
 
 def test_skipped_rows_are_counted_on_the_import_file(session_factory, square_files):
+    """A zero-value no-sale is still skipped and still counted.
+
+    This is the deliberate exclusion and it is unchanged: a £0.00 payment with
+    no discount is not analytical revenue. It is reported, not hidden.
+    """
     request = square_files(
         transactions=[
             transaction_row(**{"Transaction ID": "TX-OK", "Net Sales": "£3.65",
                                "Gross Sales": "£3.65"}),
             transaction_row(**{"Transaction ID": "TX-ZERO", "Net Sales": "£0.00",
                                "Gross Sales": "£0.00"}),
-            transaction_row(**{"Transaction ID": "TX-BAD", "Source": "Mystery Co",
-                               "Net Sales": "£5.00", "Gross Sales": "£5.00"}),
         ],
         items=[item_row(**{"Transaction ID": "TX-OK", "Product Sales": "£3.65"})],
     )
@@ -550,12 +554,158 @@ def test_skipped_rows_are_counted_on_the_import_file(session_factory, square_fil
         tx_file = s.scalar(
             select(ImportFile).where(ImportFile.role == ImportFileRole.TRANSACTIONS)
         )
-        assert tx_file.row_count == 3
+        assert tx_file.row_count == 2
         assert tx_file.rows_imported == 1
-        assert tx_file.rows_skipped == 2
+        assert tx_file.rows_skipped == 1
         batch = s.get(ImportBatch, outcome.batch_id)
         assert "zero_value_transaction" in batch.error_log
-        assert "unresolved_channel" in batch.error_log
+
+
+# --- unresolved channels -----------------------------------------------------
+#
+# A transaction whose channel cannot be derived used to be skipped like any
+# other unnormalisable row. Its item lines went with it, and the loss only
+# surfaced much later as a reconciliation mismatch against Square's Items
+# Summary — which counts every sold item however it was fulfilled. The failure
+# named the wrong layer. It now stops the import before anything is written.
+
+
+def unresolved_import(square_files, **overrides):
+    """One good order plus one whose Source/Dining Option cannot be mapped."""
+    bad = {"Transaction ID": "TX-BAD", "Payment ID": "PAY-BAD",
+           "Net Sales": "£5.00", "Gross Sales": "£5.00"}
+    bad.update(overrides)
+    return square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-OK", "Payment ID": "PAY-OK",
+                               "Net Sales": "£3.65", "Gross Sales": "£3.65"}),
+            transaction_row(**bad),
+        ],
+        items=[
+            item_row(**{"Transaction ID": "TX-OK", "Product Sales": "£3.65"}),
+            item_row(**{"Transaction ID": "TX-BAD", "Item": "Mystery Item",
+                        "Product Sales": "£5.00"}),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_fragment",
+    [
+        ({"Source": "Mystery Co"}, "unmapped source"),
+        ({"Dining Option": "Kerbside"}, "unmapped dining option"),
+        ({"Dining Option": ""}, "no dining option"),
+    ],
+)
+def test_unresolvable_channel_rejects_the_import(
+    session_factory, square_files, overrides, expected_fragment
+):
+    """An unmapped combination fails as ITSELF, not as a reconciliation error.
+
+    The distinction is the whole point: reconciliation_failed sends the reader
+    to look for an arithmetic bug in a source file that is perfectly correct.
+    """
+    service = SquareImportService(session_factory)
+
+    with pytest.raises(UnresolvedChannelError) as caught:
+        service.run(unresolved_import(square_files, **overrides))
+
+    message = str(caught.value)
+    assert expected_fragment in message
+    # Enough context to extend the mapping without opening the file.
+    assert "TX-BAD" in message
+    assert "row" in message
+
+
+def test_unresolvable_channel_writes_no_sales_data(session_factory, square_files):
+    """Atomicity: the good order in the same file is not written either."""
+    before = counts(session_factory)
+
+    with pytest.raises(UnresolvedChannelError):
+        SquareImportService(session_factory).run(
+            unresolved_import(square_files, **{"Source": "Mystery Co"})
+        )
+
+    after = counts(session_factory)
+    assert after["orders"] == before["orders"] == 0
+    assert after["items"] == before["items"] == 0
+    assert after["products"] == before["products"] == 0
+    # The FAILED batch IS recorded — that is how a failure stays diagnosable —
+    # but it carries no ImportFile rows, so the checksums remain retryable.
+    assert after["batches"] == before["batches"] + 1
+    assert after["files"] == before["files"] == 0
+
+
+def test_unresolvable_channel_is_not_reported_as_reconciliation_failure(
+    session_factory, square_files
+):
+    """The regression this exists for.
+
+    Before the fix the unresolvable order was dropped, its items were dropped
+    with it, and the import died complaining that our totals disagreed with
+    Square's — 5 units and £32.70 short, in the real September export.
+    """
+    with pytest.raises(UnresolvedChannelError):
+        SquareImportService(session_factory).run(
+            unresolved_import(square_files, **{"Dining Option": "Kerbside"})
+        )
+
+
+def test_a_refund_never_triggers_the_unresolved_channel_rejection(
+    session_factory, square_files
+):
+    """A refund is a real financial event whichever way its columns read.
+
+    It inherits its payment's channel, or is recorded as UNKNOWN — it is never
+    dropped, so it can never be the thing that stops an import.
+    """
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-P", "Payment ID": "PAY-1",
+                               "Net Sales": "£10.00", "Gross Sales": "£10.00",
+                               "Source": "Uber Eats", "Dining Option": ""}),
+            transaction_row(**{"Transaction ID": "TX-R", "Payment ID": "PAY-1",
+                               "Event Type": "Refund", "Net Sales": "-£10.00",
+                               "Gross Sales": "-£10.00", "Source": "",
+                               "Dining Option": ""}),
+        ],
+        items=[item_row(**{"Transaction ID": "TX-P", "Product Sales": "£10.00"})],
+    )
+
+    outcome = SquareImportService(session_factory).run(request)
+    assert outcome.orders_created == 2
+
+
+def test_mixed_fulfilment_combinations_import_successfully(
+    session_factory, square_files
+):
+    """The two combinations found in the real year now import cleanly."""
+    request = square_files(
+        transactions=[
+            transaction_row(**{"Transaction ID": "TX-A", "Payment ID": "PAY-A",
+                               "Net Sales": "£5.00", "Gross Sales": "£5.00",
+                               "Source": "Point of Sale",
+                               "Dining Option": "Eat In, Pick Up"}),
+            transaction_row(**{"Transaction ID": "TX-B", "Payment ID": "PAY-B",
+                               "Net Sales": "£5.00", "Gross Sales": "£5.00",
+                               "Source": "Point of Sale",
+                               "Dining Option": "Pick Up, Takeaway"}),
+        ],
+        items=[
+            item_row(**{"Transaction ID": "TX-A", "Product Sales": "£5.00"}),
+            item_row(**{"Transaction ID": "TX-B", "Product Sales": "£5.00"}),
+        ],
+    )
+
+    outcome = SquareImportService(session_factory).run(request)
+
+    assert outcome.orders_created == 2
+    with session_factory() as s:
+        channels = {
+            o.source_order_id: o.channel for o in s.scalars(select(Order)).all()
+        }
+    assert channels["TX-A"] is Channel.MIXED
+    assert channels["TX-B"] is Channel.MIXED
 
 
 def test_importer_persists_line_level_discounts(session_factory, square_files):

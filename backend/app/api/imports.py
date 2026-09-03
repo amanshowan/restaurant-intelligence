@@ -24,6 +24,7 @@ from app.services.importer import (
     ImportRejected,
     ImportRequest,
     ReconciliationError,
+    UnresolvedChannelError,
     SquareImportService,
 )
 
@@ -151,8 +152,9 @@ def _to_summary(outcome: ImportOutcome) -> ImportSummary:
         422: {
             "model": ErrorResponse,
             "description": (
-                "Not a valid Square export, reconciliation failed, or a "
-                "required file was missing from the request"
+                "Not a valid Square export, a transaction's channel could not "
+                "be resolved, reconciliation failed, or a required file was "
+                "missing from the request"
             ),
         },
         500: {"model": ErrorResponse, "description": "Unexpected server error"},
@@ -219,6 +221,15 @@ def import_square_export(
         except ReconciliationError as exc:
             raise _error(
                 UNPROCESSABLE, "reconciliation_failed", str(exc)
+            ) from exc
+
+        except UnresolvedChannelError as exc:
+            # Distinct from reconciliation_failed on purpose. This is the
+            # source telling us about a fulfilment combination the mapping does
+            # not cover; reporting it as an arithmetic mismatch sends the
+            # reader to look for a bug in a file that is perfectly correct.
+            raise _error(
+                UNPROCESSABLE, "unresolved_channel", str(exc)
             ) from exc
 
         except (SourceFormatError, SourceSchemaError) as exc:

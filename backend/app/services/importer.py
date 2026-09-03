@@ -82,6 +82,24 @@ class ReconciliationError(ImportError_):
     """Imported totals do not match the Items Summary exactly."""
 
 
+class UnresolvedChannelError(ImportError_):
+    """A non-zero transaction carries a Source/Dining Option the mapping does
+    not cover, so its channel cannot be established.
+
+    Such a row used to be skipped like any other unnormalisable row. That was
+    wrong in a specific and expensive way: the order was dropped, its item
+    lines were dropped with it, and the loss then reappeared much later as a
+    reconciliation mismatch against Square's Items Summary — which counts every
+    sold item regardless of how it was fulfilled. The reported failure named
+    the wrong layer entirely, sending the reader to look for an arithmetic bug
+    in a file that was perfectly correct.
+
+    An unmapped combination is new information about the source, not a bad row.
+    It fails the import loudly, before anything is written, so the mapping can
+    be extended deliberately rather than revenue quietly going missing.
+    """
+
+
 class ConflictingOrderError(ImportError_):
     """An incoming order exists already with DIFFERENT content.
 
@@ -286,6 +304,11 @@ class SquareImportService:
         tx_result = parsed[ImportFileRole.TRANSACTIONS]
         item_result = parsed[ImportFileRole.ITEMS_DETAIL]
         summary_result = parsed.get(ImportFileRole.ITEMS_SUMMARY)
+
+        # BEFORE anything is built or written. An unmapped channel is a gap in
+        # our understanding of the source, and continuing would drop real
+        # revenue and then blame the arithmetic for the shortfall.
+        self._reject_unresolved_channels(tx_result)
 
         orders, orphan_issues = attach_items(tx_result.orders, item_result.items)
         issues: list[RowIssue] = [
@@ -542,6 +565,55 @@ class SquareImportService:
                 )
             )
         session.flush()
+
+    # -- unresolved channels --------------------------------------------------
+
+    #: Distinct combinations named in the error before it stops listing them.
+    #: The point is to identify the combinations to map, not to reproduce every
+    #: offending row.
+    _MAX_REPORTED_COMBINATIONS = 5
+
+    @staticmethod
+    def _reject_unresolved_channels(tx_result: ParseResult) -> None:
+        """Fail the import if any transaction's channel could not be derived.
+
+        Only PAYMENT rows can reach this state. Zero-value rows return earlier
+        and keep their deliberate skip, and a refund never lands here at all —
+        it inherits its payment's channel or is recorded as UNKNOWN, because a
+        refund is a real financial event whichever way its columns read.
+
+        The message carries the row number, the transaction id and the
+        Source/Dining Option that could not be mapped. Those are the only
+        things needed to extend the mapping, and none of them is personal data:
+        `RowIssue.source_order_id` is a Square transaction id, and the customer,
+        card and staff columns are dropped at the parsing boundary and are not
+        present here to leak.
+        """
+        unresolved = [
+            issue
+            for issue in tx_result.issues
+            if issue.code is IssueCode.UNRESOLVED_CHANNEL
+        ]
+        if not unresolved:
+            return
+
+        shown = unresolved[: SquareImportService._MAX_REPORTED_COMBINATIONS]
+        details = "; ".join(
+            f"row {issue.row_number}"
+            + (f" (transaction {issue.source_order_id})" if issue.source_order_id else "")
+            + f": {issue.message}"
+            for issue in shown
+        )
+        remaining = len(unresolved) - len(shown)
+        if remaining:
+            details += f"; and {remaining} more"
+
+        raise UnresolvedChannelError(
+            f"{len(unresolved)} transaction(s) could not be assigned a channel, "
+            f"so the import was stopped before anything was written: "
+            f"{details}. Add the combination to the Source/Dining Option "
+            f"mapping and retry."
+        )
 
     # -- reconciliation -------------------------------------------------------
 
