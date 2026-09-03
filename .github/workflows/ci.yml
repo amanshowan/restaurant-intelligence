@@ -28,6 +28,10 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg://restaurant:ci_only@localhost:5432/restaurant_intelligence
+      # The suite refuses to run without this, and refuses to run against a
+      # database whose name does not end in "_test". conftest.py creates it on
+      # first use, so the postgres service above needs no extra configuration.
+      TEST_DATABASE_URL: postgresql+psycopg://restaurant:ci_only@localhost:5432/restaurant_intelligence_test
 
     defaults:
       run:

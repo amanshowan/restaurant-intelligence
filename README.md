@@ -154,6 +154,22 @@ would not exercise the foreign-key policies, composite constraints and
 NULL-distinctness rules the design depends on. It builds its schema by running
 the migrations, so a migration that drifts from the models fails the suite.
 
+It runs against **`restaurant_intelligence_test`**, a separate database on the
+same PostgreSQL server, and never touches the development database:
+
+| Database | Used by |
+|---|---|
+| `restaurant_intelligence` | the API and the dashboard — `DATABASE_URL` |
+| `restaurant_intelligence_test` | pytest, and nothing else — `TEST_DATABASE_URL` |
+
+This is not a convention to remember, it is enforced. The suite truncates every
+sales table and downgrades the schema to base, so
+[`backend/tests/conftest.py`](backend/tests/conftest.py) refuses to start if
+`TEST_DATABASE_URL` is unset, if it names the development database, or if the
+database name does not end in `_test` — it never falls back to `DATABASE_URL`.
+The test database is created automatically on the first run, so there is no
+setup step.
+
 The frontend's checks run in its own container, so they need no host Node:
 
 ```bash

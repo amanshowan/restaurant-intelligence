@@ -66,6 +66,20 @@ services:
       # NOT localhost: inside a container, localhost means that container.
       # Driver is psycopg (v3), not psycopg2.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # A SEPARATE database on the SAME PostgreSQL server, used by pytest and
+      # by nothing else. The suite is destructive — it truncates every sales
+      # table and downgrades the schema to base — so it must not be pointed at
+      # the database holding imported Square data and serving the dashboard.
+      #
+      # A second database rather than a second server: the isolation needed is
+      # between datasets, not between engines, and running one PostgreSQL means
+      # the tests keep exercising the same version and the same configuration
+      # the application runs against.
+      #
+      # backend/tests/conftest.py reads this, refuses to run if it is missing
+      # or does not name a `_test` database, and creates the database on first
+      # use. It never falls back to DATABASE_URL.
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_TEST_DB:-restaurant_intelligence_test}
     ports:
       # Bound to 127.0.0.1 on the host, matching the db service. Note this is
       # a different layer to uvicorn's --host 0.0.0.0: uvicorn must listen on

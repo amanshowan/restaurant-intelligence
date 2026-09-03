@@ -3,13 +3,194 @@
 Every fixture here is SYNTHETIC. The real café exports are gitignored and are
 never referenced by the test suite — tests must pass on a fresh clone with no
 access to any real business data.
+
+The first thing this module does, before anything else, is point the whole
+process at a DEDICATED TEST DATABASE. See the block below.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+
+# =============================================================================
+# Test database isolation
+# =============================================================================
+#
+# This block MUST run before anything imports `app.config` or `app.db`.
+# `Settings` is instantiated at import time and `app.db` builds its engine from
+# it at import time, so by the time either module has been imported the choice
+# of database is already made and cannot be taken back.
+#
+# conftest.py is the first module pytest imports, which is what makes this the
+# one reliable place to make that choice.
+#
+# WHY THIS EXISTS
+# ---------------
+# The suite is destructive by design: `session_factory` TRUNCATEs every sales
+# table before each test, and tests/test_migrations.py downgrades the schema to
+# base and back. Previously all of that ran against whatever `DATABASE_URL`
+# pointed at — which, inside the Compose stack, is the development database
+# holding imported Square data. Running the tests silently destroyed it.
+#
+# HOW
+# ---
+# Rather than teach every fixture and helper to carry a second URL around, the
+# process-wide `DATABASE_URL` is REPLACED with the test URL here. Everything
+# downstream — `app.db.engine`, `SessionLocal`, Alembic's env.py, and the
+# service classes — then resolves to the test database with no knowledge that
+# anything unusual happened, and no test can reach the development database
+# even by accident.
+#
+# Application code is untouched: outside pytest, `DATABASE_URL` means exactly
+# what it has always meant.
+
+#: Where the test database URL must come from. Deliberately a DIFFERENT
+#: variable to DATABASE_URL, so that pointing the suite somewhere is always a
+#: deliberate act rather than an inherited default.
+TEST_DATABASE_URL_ENV = "TEST_DATABASE_URL"
+
+#: A test database must be named so that it cannot be mistaken for anything
+#: else. This is the whole guard: a suffix a production or development database
+#: would never plausibly carry.
+TEST_DATABASE_SUFFIX = "_test"
+
+#: Where the ORIGINAL DATABASE_URL is stashed before it is redirected below.
+#:
+#: This module's body runs TWICE: once when pytest imports it as `conftest`,
+#: and again as `tests.conftest` when a test module imports a shared helper
+#: from it (five of them do). By the second run DATABASE_URL already holds the
+#: test URL, so a naive "are these two the same?" check would compare the test
+#: URL against itself and refuse to run. Stashing the original the first time
+#: through makes the comparison meaningful and the whole block idempotent.
+DEVELOPMENT_DATABASE_URL_ENV = "RI_DEVELOPMENT_DATABASE_URL"
+
+
+class UnsafeTestDatabase(RuntimeError):
+    """The suite refuses to run against the configured database.
+
+    Raised at import time, so it aborts collection before a single destructive
+    fixture has had the chance to execute. Failing loudly here is the entire
+    point: the alternative — quietly falling back to DATABASE_URL — is the
+    defect this module exists to prevent.
+    """
+
+
+def database_name(url: str) -> str:
+    """The database name from a SQLAlchemy URL, without connecting."""
+    return urlsplit(url).path.lstrip("/")
+
+
+def assert_is_test_database(url: str) -> str:
+    """Return `url`, or raise if it does not name an obvious test database.
+
+    Checked on the NAME rather than the host or port, because the dangerous
+    case is precisely the one where everything else is identical: the test and
+    development databases live on the same PostgreSQL server, with the same
+    credentials, and differ only here.
+    """
+    name = database_name(url)
+
+    if not name:
+        raise UnsafeTestDatabase(
+            f"{TEST_DATABASE_URL_ENV} names no database: {url!r}"
+        )
+
+    if not name.endswith(TEST_DATABASE_SUFFIX):
+        raise UnsafeTestDatabase(
+            f"refusing to run destructive tests against database {name!r}: "
+            f"the test database name must end with {TEST_DATABASE_SUFFIX!r}.\n"
+            f"This suite TRUNCATEs every sales table and downgrades the schema "
+            f"to base. Point {TEST_DATABASE_URL_ENV} at a dedicated database "
+            f"(for example {name}{TEST_DATABASE_SUFFIX})."
+        )
+
+    return url
+
+
+def _resolve_test_database_url() -> str:
+    """The test database URL, or a refusal to run.
+
+    There is deliberately NO fallback to DATABASE_URL. An unset variable is a
+    misconfiguration, and inheriting the development database is exactly the
+    outcome being prevented.
+    """
+    url = os.environ.get(TEST_DATABASE_URL_ENV)
+
+    if not url:
+        raise UnsafeTestDatabase(
+            f"{TEST_DATABASE_URL_ENV} is not set, and this suite will not fall "
+            f"back to DATABASE_URL — it would destroy the data in it.\n"
+            f"Inside the Compose stack the variable is already set on the api "
+            f"service; run the suite with:\n"
+            f"    docker compose exec api python -m pytest"
+        )
+
+    # setdefault, so the first execution records the real development URL and
+    # every later one reads it back rather than seeing the redirected value.
+    # Correct whichever import happens first.
+    development_url = os.environ.setdefault(
+        DEVELOPMENT_DATABASE_URL_ENV, os.environ.get("DATABASE_URL", "")
+    )
+    if development_url and url == development_url:
+        # Belt and braces. The suffix check above would normally have caught
+        # this, but an identical URL is worth naming precisely, because it is
+        # the specific mistake with the worst consequence.
+        raise UnsafeTestDatabase(
+            f"{TEST_DATABASE_URL_ENV} is identical to DATABASE_URL "
+            f"({database_name(url)!r}). The test database must be a separate "
+            f"database, not the one the application and dashboard use."
+        )
+
+    return assert_is_test_database(url)
+
+
+def _ensure_test_database_exists(url: str) -> None:
+    """Create the test database if it does not exist yet.
+
+    Done here rather than in a Postgres init script because those run only when
+    the data volume is first initialised. Anyone with an existing volume — that
+    is, anyone who has used this project before today — would otherwise have to
+    create the database by hand, and a setup step that is easy to skip is a
+    setup step that gets skipped.
+
+    Connects to the `postgres` maintenance database on the same server, using
+    the credentials from the test URL itself.
+    """
+    from sqlalchemy import create_engine, text
+
+    name = database_name(url)
+    maintenance_url = url.rsplit("/", 1)[0] + "/postgres"
+
+    # CREATE DATABASE cannot run inside a transaction block, hence AUTOCOMMIT.
+    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": name},
+            ).scalar()
+            if not exists:
+                # PostgreSQL has no CREATE DATABASE IF NOT EXISTS, and the name
+                # cannot be a bind parameter. It comes from our own validated
+                # environment, and the suffix check has already constrained it.
+                conn.execute(text(f'CREATE DATABASE "{name}"'))
+    finally:
+        engine.dispose()
+
+
+TEST_DATABASE_URL = _resolve_test_database_url()
+_ensure_test_database_exists(TEST_DATABASE_URL)
+
+# The redirection itself. Everything imported from `app.*` below this line —
+# and in every test module — now resolves to the test database. Assigning the
+# same value again on this module's second execution is a no-op.
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
+# =============================================================================
 
 DELIMITER = "\t"
 
@@ -134,9 +315,19 @@ def database():
     means the tests exercise exactly what `alembic upgrade head` produces, so a
     migration that drifts from the models fails the suite rather than passing
     against a schema that only exists in tests.
+
+    Alembic reads its URL from `settings.database_url`, which the block at the
+    top of this module has already pointed at the test database — so the
+    migration-based setup is preserved exactly, it simply runs somewhere safe.
     """
     from alembic import command
     from alembic.config import Config
+
+    # The second checkpoint, and the one that guards the engine ACTUALLY in
+    # use rather than the environment it was built from. Every destructive
+    # fixture in the suite depends on this one, so nothing truncates a table or
+    # downgrades a schema without passing through here first.
+    assert_is_test_database(engine.url.render_as_string(hide_password=False))
 
     command.upgrade(Config("alembic.ini"), "head")
     yield engine
