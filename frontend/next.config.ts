@@ -21,6 +21,39 @@ const nextConfig: NextConfig = {
    */
   output: "standalone",
 
+  experimental: {
+    /**
+     * How much request body the rewrite below will carry.
+     *
+     * Next.js buffers a proxied request body and DEFAULTS TO 10 MB. Past that
+     * it logs "Request body exceeded 10MB … Only the first 10MB will be
+     * available unless configured" and drops the rest, and the upstream then
+     * sees a truncated multipart body and closes the socket — surfacing as
+     * `Failed to proxy … socket hang up / ECONNRESET`. A real month of Square
+     * exports is around 15 MB (UTF-16 doubles the byte size of plain ASCII),
+     * so every genuine monthly import hit this.
+     *
+     * WHY THIS IS DELIBERATELY LARGER THAN THE BACKEND ACCEPTS
+     * FastAPI remains the authority on upload size: 64 MB per file and 160 MB
+     * per request (MAX_FILE_BYTES / MAX_REQUEST_BYTES in
+     * backend/app/api/imports.py), and it answers an oversized upload with a
+     * structured 413 the UI can explain. This proxy limit sits ABOVE that
+     * ceiling so the proxy never becomes the thing that rejects an upload:
+     * a request at the backend's 160 MB limit is larger than 160 MB on the
+     * wire once multipart boundaries, part headers and filenames are added,
+     * and a proxy limit set exactly at 160 MB would truncate a request the
+     * backend would have accepted — failing it as an unexplained connection
+     * reset instead of a documented error. 192 MB leaves ~20% headroom for
+     * that overhead and keeps every size decision in one place.
+     *
+     * Renaming note: this option is `proxyClientMaxBodySize`, not
+     * `middlewareClientMaxBodySize`. Next 16 deprecated the latter — it warns
+     * on use, and setting both throws — and the runtime error message still
+     * links to the old name.
+     */
+    proxyClientMaxBodySize: "192mb",
+  },
+
   /**
    * Same-origin API proxy.
    *
