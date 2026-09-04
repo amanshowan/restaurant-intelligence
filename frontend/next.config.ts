@@ -13,13 +13,43 @@ import type { NextConfig } from "next";
  */
 const API_UPSTREAM_URL = process.env.API_UPSTREAM_URL ?? "http://api:8000";
 
+/**
+ * Whether to emit a standalone server build.
+ *
+ * `"standalone"` everywhere EXCEPT on Vercel, where it must be off.
+ *
+ * WHY
+ * Standalone output traces the exact files the server needs into
+ * `.next/standalone`, which is what the production stage of our Dockerfile
+ * copies to get a self-contained server without the source tree or the dev
+ * dependencies. That is the deployment this project actually ships, so the
+ * setting stays for it.
+ *
+ * Vercel does not need it — it builds and hosts the app with its own adapter,
+ * which reads the per-entry trace manifests `.next/*.nft.json` directly. On
+ * Next.js 16.3 those two mechanisms collide: enabling standalone changes which
+ * trace files are written, and the adapter then fails looking for one that no
+ * longer exists, AFTER a completely successful build:
+ *
+ *     Error: ENOENT: no such file or directory, open
+ *     '/vercel/path0/frontend/.next/next-server.js.nft.json'
+ *
+ * Keyed on `VERCEL`, which Vercel sets on every build and which nothing else
+ * sets — rather than on `NODE_ENV` or a flag of our own, either of which would
+ * have to be remembered and set correctly by hand.
+ *
+ * Exported, and taking the flag as an argument, so the behaviour can be
+ * asserted without running two builds; see src/lib/next-config.test.ts.
+ */
+export function resolveOutput(
+  vercel: string | undefined = process.env.VERCEL,
+): NextConfig["output"] {
+  return vercel ? undefined : "standalone";
+}
+
 const nextConfig: NextConfig = {
-  /**
-   * Traces the exact files the server needs into `.next/standalone`, so the
-   * production stage of the Dockerfile can copy a self-contained server
-   * without the source or the dev dependencies. Has no effect on `next dev`.
-   */
-  output: "standalone",
+  // Standalone for our Docker image, off on Vercel. See `resolveOutput` above.
+  output: resolveOutput(),
 
   experimental: {
     /**
