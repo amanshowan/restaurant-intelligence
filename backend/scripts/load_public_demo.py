@@ -81,8 +81,11 @@ def ensure_database(url: str) -> None:
     """Create the demo database if it does not exist, and start it empty."""
     from sqlalchemy import create_engine, text
 
+    from app.db_url import normalise_database_url
+
     name = database_name(url)
-    maintenance = url.rsplit("/", 1)[0] + "/postgres"
+    # This engine predates Settings, so it normalises the scheme itself.
+    maintenance = normalise_database_url(url.rsplit("/", 1)[0] + "/postgres")
     engine = create_engine(maintenance, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:

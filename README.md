@@ -203,6 +203,25 @@ sales table and downgrades the schema to base, so
 [`backend/tests/conftest.py`](backend/tests/conftest.py) refuses to start if
 `TEST_DATABASE_URL` is unset, if it names the development database, or if the
 database name does not end in `_test` — it never falls back to `DATABASE_URL`.
+
+### Deploying against a managed database
+
+This project uses **psycopg 3**, which SQLAlchemy reaches through the explicit
+`postgresql+psycopg://` scheme. Managed Postgres providers hand out the generic
+libpq form — `postgresql://` or the older `postgres://` — which SQLAlchemy
+resolves to the **psycopg2** dialect, a driver this project deliberately does
+not install. Left alone, that produces a clean build and a first migration that
+dies with `ModuleNotFoundError: No module named 'psycopg2'`, naming a missing
+dependency rather than the URL that asked for it.
+
+`DATABASE_URL` is therefore normalised onto psycopg 3 as it enters the
+application ([`backend/app/db_url.py`](backend/app/db_url.py)), so **you can
+paste a provider's connection string in unchanged**. A URL that already names a
+driver is never retargeted, and only the scheme is rewritten — credentials,
+query parameters and percent-encoding are untouched.
+
+The runtime engine and Alembic both read the same normalised value, which is
+what stops a deployment getting a working application and a failed migration.
 The test database is created automatically on the first run, so there is no
 setup step.
 

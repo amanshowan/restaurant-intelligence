@@ -23,7 +23,12 @@ from app.db import Base
 
 config = context.config
 
-# Inject the URL at runtime. set_main_option escapes '%' for ConfigParser,
+# Inject the URL at runtime. `settings.database_url` has already been
+# normalised onto psycopg 3 by app/config.py, so the migration and the
+# application cannot end up on different drivers — the failure mode that
+# produces a successful build and a first migration dying on psycopg2.
+#
+# set_main_option escapes '%' for ConfigParser,
 # which matters if a password is ever percent-encoded.
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 

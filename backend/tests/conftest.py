@@ -162,8 +162,14 @@ def _ensure_test_database_exists(url: str) -> None:
     """
     from sqlalchemy import create_engine, text
 
+    # Normalised here as well as in Settings: this engine is built from the
+    # raw TEST_DATABASE_URL, before app.config has been imported, so it does
+    # not benefit from the field validator. A generic scheme would fail on
+    # psycopg2 while the application itself worked.
+    from app.db_url import normalise_database_url
+
     name = database_name(url)
-    maintenance_url = url.rsplit("/", 1)[0] + "/postgres"
+    maintenance_url = normalise_database_url(url.rsplit("/", 1)[0] + "/postgres")
 
     # CREATE DATABASE cannot run inside a transaction block, hence AUTOCOMMIT.
     engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")

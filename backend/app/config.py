@@ -4,7 +4,10 @@ from zoneinfo import ZoneInfo
 
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.db_url import normalise_database_url
 
 
 class Settings(BaseSettings):
@@ -72,6 +75,24 @@ class Settings(BaseSettings):
     #: than returning a refusal. Enabled by default; a refusal is still handled
     #: safely if it arrives, so this only affects availability.
     llm_refusal_fallbacks: bool = True
+
+
+    @field_validator("database_url")
+    @classmethod
+    def _pin_postgres_driver(cls, url: str) -> str:
+        """Translate a generic `postgresql://` URL onto psycopg 3.
+
+        Normalised HERE rather than at each consumer, because both consumers
+        read this field: `app.db` builds the runtime engine from it and
+        `alembic/env.py` injects it as `sqlalchemy.url`. Doing it once means
+        the migration and the application can never disagree about which
+        driver they are using — which is exactly how a deployment gets a
+        successful build and a failed first migration.
+
+        See app/db_url.py for why a managed database hands out the generic
+        scheme in the first place.
+        """
+        return normalise_database_url(url)
 
 
 settings = Settings()
