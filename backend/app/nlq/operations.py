@@ -21,6 +21,7 @@ __all__ = [
     "MAX_ATTACHMENT_ROWS",
     "MAX_BUSIEST_HOURS",
     "MAX_CANDIDATE_PRODUCTS",
+    "MAX_CATALOGUE_PRODUCTS",
     "MAX_HORIZON_DAYS",
     "MAX_MENU_EVIDENCE_ROWS",
     "MAX_MIN_PAIR_ORDERS",
@@ -91,6 +92,10 @@ MAX_BUSIEST_HOURS = 24
 MAX_MIN_PAIR_ORDERS = 1000
 #: Candidate products returned when a name is ambiguous.
 MAX_CANDIDATE_PRODUCTS = 25
+#: Catalogue entries shown to a planner as context. A café menu is a few
+#: hundred variations at most; the cap stops an unusually large catalogue from
+#: dominating a prompt, and truncation is reported rather than hidden.
+MAX_CATALOGUE_PRODUCTS = 400
 
 #: Date-series operations return one bucket per day in the requested range, so
 #: their size is bounded by the range itself rather than by a row limit.

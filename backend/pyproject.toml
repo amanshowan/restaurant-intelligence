@@ -36,6 +36,14 @@ dependencies = [
     # layer — a DataFrame would add a large dependency, a second indexing
     # model and a silent float coercion of integer pence, for nothing.
     "scikit-learn>=1.5,<2",
+
+    # Natural-language analytics (M7 Commit 25). The official Anthropic SDK,
+    # reached only through app/nlq/providers/anthropic_provider.py — every
+    # other module talks to the LLMClient protocol, so swapping or adding a
+    # provider touches one file. The dependency is soft at runtime: the API
+    # imports it lazily, so the rest of the application starts and serves
+    # normally when no key is configured.
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]

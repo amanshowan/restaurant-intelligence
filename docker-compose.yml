@@ -80,6 +80,25 @@ services:
       # or does not name a `_test` database, and creates the database on first
       # use. It never falls back to DATABASE_URL.
       TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_TEST_DB:-restaurant_intelligence_test}
+      # Natural-language analytics (M7). Deliberately defaulted to empty
+      # rather than omitted: an unset key is a supported state in which the
+      # API starts and every other endpoint works, and making that explicit
+      # here stops Compose warning about an undefined variable.
+      #
+      # The value lives in .env (gitignored) and reaches the container only
+      # through this substitution. It is never baked into an image layer.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-5}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      LLM_PLANNER_EFFORT: ${LLM_PLANNER_EFFORT:-low}
+      LLM_ANSWER_EFFORT: ${LLM_ANSWER_EFFORT:-medium}
+      LLM_MAX_PLAN_ATTEMPTS: ${LLM_MAX_PLAN_ATTEMPTS:-2}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      # Server-side refusal rerouting. Passed through so it can be turned off
+      # from .env without editing this file — it is the one part of the
+      # request that could not be verified against a live API before first
+      # use, so it needs an escape hatch that does not require a code change.
+      LLM_REFUSAL_FALLBACKS: ${LLM_REFUSAL_FALLBACKS:-true}
     ports:
       # Bound to 127.0.0.1 on the host, matching the db service. Note this is
       # a different layer to uvicorn's --host 0.0.0.0: uvicorn must listen on

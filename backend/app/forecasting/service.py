@@ -174,7 +174,7 @@ class ForecastService:
           before trading began would manufacture months of fake closures and
           teach the model that the business is usually shut.
         """
-        first, latest = self._observed_range()
+        first, latest = self.observed_range()
         if first is None or latest is None:
             raise InsufficientHistoryError(
                 "no orders have been imported, so there is nothing to forecast from"
@@ -194,8 +194,15 @@ class ForecastService:
             )
         return series
 
-    def _observed_range(self) -> tuple[date | None, date | None]:
-        """First and last LOCAL day the database holds an order for."""
+    def observed_range(self) -> tuple[date | None, date | None]:
+        """First and last LOCAL day the database holds an order for.
+
+        Public because it is the canonical answer to "how far does the data
+        go", which the M7 question layer needs in order to resolve "last
+        month" against the data rather than against the wall clock. Exposing
+        the accessor that already existed is preferable to a second query
+        computing the same thing somewhere else.
+        """
         from sqlalchemy import func, select
 
         from app.config import settings

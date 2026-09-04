@@ -38,7 +38,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Product
-from app.nlq.operations import MAX_CANDIDATE_PRODUCTS
+from app.nlq.operations import MAX_CANDIDATE_PRODUCTS, MAX_CATALOGUE_PRODUCTS
 
 #: Runs of whitespace, for the conservative normalisation below.
 _WHITESPACE = re.compile(r"\s+")
@@ -142,6 +142,36 @@ class ProductResolver:
         return ProductResolution(
             status="ambiguous", candidates=matches[:MAX_CANDIDATE_PRODUCTS]
         )
+
+
+    def catalogue(self, limit: int = MAX_CATALOGUE_PRODUCTS) -> list[ProductMatch]:
+        """Every product variation the catalogue holds, bounded and ordered.
+
+        Lives here, on the module that already owns catalogue access, so the
+        AI layer still reaches the database through exactly one door.
+
+        This is what lets a planner name "The Big Breakfast" instead of
+        guessing "Big Breakfast" — and it strengthens the resolver's refusal
+        to guess rather than weakening it. The caller is shown the real names
+        up front; matching itself stays exact. Nothing here is a fuzzy
+        fallback for a name that was not on the list.
+
+        Names and price points only. No order, customer or financial data.
+        """
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(Product)
+                .order_by(Product.name, Product.variation, Product.id)
+                .limit(limit)
+            ).scalars().all()
+        return [_match(p) for p in rows]
+
+    def count(self) -> int:
+        """How many variations the catalogue holds, for truncation reporting."""
+        with self._session_factory() as session:
+            return session.execute(
+                select(func.count()).select_from(Product)
+            ).scalar_one()
 
 
 def _match(product: Product) -> ProductMatch:

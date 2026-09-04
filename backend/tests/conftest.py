@@ -526,3 +526,118 @@ def product_id(session_factory):
             )
 
     return _lookup
+
+
+# --- natural-language layer fixtures (M7 Commit 25) --------------------------
+#
+# The deterministic suite NEVER makes a provider call. Every test below runs
+# against `FakeLLM`, which satisfies the `LLMClient` protocol, returns whatever
+# the test queues, and records exactly what it was asked — which is what makes
+# prompt content, grounding inputs and injection handling assertable.
+
+
+class FakeLLM:
+    """A scripted `LLMClient`.
+
+    Queue responses (or exceptions) per stage; they are returned in order. Every
+    call is recorded, so a test can assert what the model was actually shown —
+    the only reliable way to test that untrusted text stayed in the user
+    message and that the answer stage received nothing but evidence.
+    """
+
+    def __init__(
+        self,
+        *,
+        structured: list | None = None,
+        text: list | None = None,
+        model: str = "fake-model-1",
+    ) -> None:
+        self._structured = list(structured or [])
+        self._text = list(text or [])
+        self._model = model
+        self.structured_calls: list[dict] = []
+        self.text_calls: list[dict] = []
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def complete_structured(self, *, system, user, schema, max_tokens, effort=None):
+        self.structured_calls.append(
+            {
+                "system": system, "user": user, "schema": schema,
+                "max_tokens": max_tokens, "effort": effort,
+            }
+        )
+        return self._next(self._structured, "complete_structured")
+
+    def complete_text(self, *, system, user, max_tokens, effort=None):
+        self.text_calls.append(
+            {
+                "system": system, "user": user, "max_tokens": max_tokens,
+                "effort": effort,
+            }
+        )
+        return self._next(self._text, "complete_text")
+
+    def _next(self, queue: list, stage: str):
+        from app.nlq.llm import LLMResponse, TokenUsage
+
+        if not queue:
+            raise AssertionError(f"FakeLLM: unexpected extra call to {stage}")
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        if hasattr(item, "text"):
+            return item
+        return LLMResponse(
+            text=item,
+            model=self._model,
+            usage=TokenUsage(input_tokens=100, output_tokens=20),
+        )
+
+
+def plan_json(*steps, answerable=True, unsupported_reason=None) -> str:
+    """Serialise a planner response the way a model would return it."""
+    import json
+
+    payload = {"answerable": answerable, "steps": list(steps)}
+    if unsupported_reason is not None:
+        payload["unsupported_reason"] = unsupported_reason
+    return json.dumps(payload)
+
+
+def step(operation: str, purpose: str = "because", **params) -> dict:
+    return {"purpose": purpose, "request": {"operation": operation, **params}}
+
+
+@pytest.fixture
+def question_service(session_factory):
+    """Build a `QuestionService` over the test database with a scripted model.
+
+    `today` is injected so every relative-date assertion is deterministic.
+    """
+    from datetime import date
+
+    from app.analytics.service import AnalyticsService
+    from app.forecasting.service import ForecastService
+    from app.nlq.context import ContextBuilder
+    from app.nlq.executor import AnalyticsExecutor
+    from app.nlq.orchestrator import QuestionService
+    from app.nlq.resolution import ProductResolver
+
+    def _build(llm, *, today: date = date(2026, 9, 4), **kwargs):
+        resolver = ProductResolver(session_factory)
+        forecasts = ForecastService(session_factory)
+        return QuestionService(
+            llm=llm,
+            executor=AnalyticsExecutor(
+                analytics=AnalyticsService(session_factory),
+                forecasts=forecasts,
+                resolver=resolver,
+            ),
+            context=ContextBuilder(resolver, forecasts, today=today),
+            **kwargs,
+        )
+
+    return _build

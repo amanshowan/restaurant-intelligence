@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.analytics import router as analytics_router
+from app.api.ask import router as ask_router
 from app.api.errors import register_error_handlers
 from app.api.health import router as health_router
 from app.api.imports import router as imports_router
@@ -32,3 +33,4 @@ app.include_router(baskets_router)
 app.include_router(menu_router)
 app.include_router(forecast_router)
 app.include_router(nlq_router)
+app.include_router(ask_router)

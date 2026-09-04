@@ -163,15 +163,44 @@ def test_the_ai_layer_owns_no_metric_definition():
                 assert node.func.id != "select", f"{name} builds its own query"
 
 
-def test_the_resolver_aggregates_nothing():
-    """Its one query reads identity columns; it computes no measure."""
+def test_the_resolver_computes_no_business_measure():
+    """It reads catalogue identity, and counts catalogue rows. Nothing more.
+
+    `count()` over `products` is permitted and is the one aggregate here: M7
+    needs the catalogue size to tell a planner when the list it was shown is
+    truncated. It touches no order, no money and no quantity, so it cannot
+    become a second definition of anything.
+
+    `sum`, `avg`, `min` and `max` stay banned — those are how a measure gets
+    computed, and every measure in this system is defined once, in M3-M6.
+    """
     tree = ast.parse(SOURCES["app.nlq.resolution"].read_text())
     called = {
         node.func.attr
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert not (called & {"sum", "count", "avg", "min", "max"})
+    assert not (called & {"sum", "avg", "min", "max"})
+
+
+def test_the_resolver_reads_only_the_product_catalogue():
+    """The catalogue listing widened what the resolver RETURNS, not which
+    tables it can reach.
+
+    Checked on the imported models rather than by scanning the text: `order_by`
+    contains "order", and the module's docstring legitimately discusses orders.
+    A module can only query a table whose model it imports.
+    """
+    tree = ast.parse(SOURCES["app.nlq.resolution"].read_text())
+    models = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "app.models"
+        )
+        for alias in node.names
+    }
+    assert models == {"Product"}
 
 
 def test_only_the_resolver_touches_the_database_directly():
