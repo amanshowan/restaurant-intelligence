@@ -1,8 +1,8 @@
 # Restaurant Intelligence
 
 Turns a café's raw Square point-of-sale exports into reconciled trading
-analytics, a backtested sales forecast, and natural-language answers that can
-only quote figures the system actually measured.
+analytics, a backtested sales forecast, and natural-language answers grounded
+only in evidence the system actually computed.
 
 ### ▶ [**Live demo — restaurant-intelligence-olive.vercel.app**](https://restaurant-intelligence-olive.vercel.app)
 ### ▶ [**2-Minute Video Demo — youtu.be/mn7h12P2GLc**](https://youtu.be/mn7h12P2GLc)
@@ -185,7 +185,7 @@ the ability to express a query.
 question  →  LLM planner  →  AnalyticsPlan (≤ 4 whitelisted operations)
           →  Pydantic validation
           →  deterministic executor  →  EvidenceBundle[]
-          →  LLM answer generator (evidence is its only input)
+          →  LLM answer generator (question + evidence; evidence is its only factual input)
           →  answer + the evidence behind it
 ```
 
@@ -403,7 +403,7 @@ trust about what it can.
 | **No prediction intervals** | Point estimates plus measured historical error only. |
 | **Single-turn Ask** | Each question is answered from its own evidence, with no memory of the last. The UI says so rather than implying otherwise. |
 | **LLM usage has a provider cost** | Answers require a third-party API billed per token. Every other page works without it. |
-| **Single business, local/demo deployment** | No tenancy model and no authentication — every reader sees everything. |
+| **Single-business demo deployment** | No tenancy model and no authentication — every reader sees everything. |
 | **No arbitrary SQL, by design** | A question outside the twelve operations is reported unanswerable rather than answered loosely. This is the security property, not a gap. |
 
 ---
