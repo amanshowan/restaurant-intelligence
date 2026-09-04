@@ -17,6 +17,11 @@ data/
 # Narrow by design — it re-includes exactly one directory, not *.csv generally.
 !demo/square-sample/*.csv
 
+# ---- Demo recordings --------------------------------------------------------
+# Screen recordings are hosted externally (YouTube) and linked from the README,
+# so the repository does not carry tens of megabytes of video in its history.
+demo/*.mp4
+
 # ---- Python -----------------------------------------------------------------
 __pycache__/
 *.py[cod]

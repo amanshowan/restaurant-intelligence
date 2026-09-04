@@ -5,6 +5,7 @@ analytics, a backtested sales forecast, and natural-language answers that can
 only quote figures the system actually measured.
 
 ### ▶ [**Live demo — restaurant-intelligence-olive.vercel.app**](https://restaurant-intelligence-olive.vercel.app)
+### ▶ [**2-Minute Video Demo — youtu.be/mn7h12P2GLc**](https://youtu.be/mn7h12P2GLc)
 
 > **The live demo runs on a deterministic synthetic dataset for a fictional
 > café ("The Copper Kettle").** Every product, price and transaction in it is
