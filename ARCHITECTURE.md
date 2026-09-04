@@ -1062,6 +1062,49 @@ The repair round deserves a note. A schema-invalid plan gets one retry, shown
 rejected payload back would give attacker-controlled text a second attempt at
 being read as an instruction.
 
+### 7n-i. The Ask page (Commit 26)
+
+The UI is a thin, honest surface over the contract above. Four decisions in it
+are worth recording.
+
+**Single-turn, and it says so.** `/analytics/ask` has no conversation
+semantics — no thread id, no history parameter — so each question is answered
+from its own evidence with no knowledge of the last. The page states this in
+the form hint rather than rendering a transcript. A transcript would look like
+memory the system does not have, and a follow-up like "and the month before?"
+would silently be answered cold.
+
+**The request hook is the one every other dashboard uses.**
+`useAnalyticsResource` is keyed here on a submission counter rather than on
+filter inputs, which is the whole adaptation needed: submitting increments the
+key, the hook aborts whatever was in flight, and a late response from an
+abandoned question cannot land. Cancellation and stale-response protection come
+from code that already had tests.
+
+**A previous answer is hidden while a new one loads**, though the hook would
+keep it. Elsewhere that behaviour is right — dimmed figures for an old date
+range are still those figures. Here the heading would say one question and the
+prose below would answer another, for the ten seconds a model takes.
+
+**The generated prose is parsed to data, never to markup.** The model emits
+light markdown, and rendering it as plain text shows literal asterisks. Rather
+than adding a markdown library — whose fast path is HTML, and therefore
+`dangerouslySetInnerHTML` — `lib/answer-format.ts` parses the three constructs
+actually used into a structure the component maps to React elements. There is
+no path from a generated string to executable markup, and no sanitiser to get
+wrong. Anything unrecognised stays literal text, which is the right failure
+direction: an unstyled asterisk is cosmetic, whereas guessing at unfamiliar
+syntax risks dropping a digit from a figure.
+
+**What the page shows of the evidence is a summary, not the bundle.** Which
+operation ran, over what period, on how many records, whether anything was
+truncated, and — for a forecast — the last day of real data and the measured
+error. The executor's rows, totals, field provenance and parameters are its own
+measurement shape; dumping them would be showing internals rather than
+evidence. `contains_forecast` drives the prediction banner and is taken from
+the EVIDENCE, not the answer's wording, so a prediction is marked even when the
+prose forgets to.
+
 ### 7o. Failure mapping
 
 None of these is a 500. A 500 says this service is broken; a missing key, a
@@ -1119,9 +1162,10 @@ restaurant-intelligence/
 │   └── tests/
 └── frontend/
     └── src/
-        ├── app/
+        ├── app/                  # one route per dashboard section, incl. /ask
         ├── components/
-        └── lib/
+        │   └── ask/              # M7 UI: form, answer, evidence, states
+        └── lib/                  # api client, formatting, ask presentation
 ```
 
 ---
@@ -1138,13 +1182,41 @@ restaurant-intelligence/
 | M6 | Wed 2 Sep | Forecasting: baseline, model, backtest, evaluation writeup |
 | M7 | Thu 3 Sep | NL query pipeline, README, screenshots, deployment |
 
-M7 is in progress. Commit 24 built the safe analytics substrate described in
-§7; Commit 25 (this one) adds the LLM planner, grounded answer generation and
-`POST /analytics/ask`; Commit 26 adds the chat UI and final hardening.
+**M7 is complete.** Commit 24 built the safe analytics substrate described in
+§7; Commit 25 added the LLM planner, grounded answer generation and
+`POST /analytics/ask`; Commit 26 added the Ask page, and with it the last
+section of the dashboard.
 
-The backend can now answer a natural-language question. There is **no chat
-frontend yet** — the dashboard does not expose it, and the feature is reached
-over HTTP only.
+### The whole system, end to end
+
+```
+Square exports (UTF-16 TSV)
+   ↓  adapter: assert the format, normalise, checksum-dedupe          M2
+validated ingestion
+   ↓  canonical vendor-neutral schema; refunds as negative orders     M1-M2
+PostgreSQL
+   ↓  one definition per metric, local-day windows, integer pence     M3
+deterministic analytics
+   ↓  variation-level grain, source line discounts, co-purchase       M4
+product & basket intelligence
+   ↓  rolling-origin backtest, ridge on calendar + lag features       M6
+predictive forecasting
+   ↓  closed operation whitelist, strict schemas, bounded results     M7/24
+safe structured analytics executor
+   ↓  question → validated AnalyticsPlan (≤4 operations)              M7/25
+LLM planner
+   ↓  executor runs the plan; nothing generative touches the data     M7/24
+deterministic evidence
+   ↓  evidence is the model's entire factual input                    M7/25
+grounded AI answer
+   ↓  answer + the evidence behind it, forecasts marked as such       M7/26
+Next.js AI analytics UI
+```
+
+Every arrow crossing into the database is deterministic code. The two
+generative steps sit at the ends — turning a question into a validated request,
+and turning measured evidence into a sentence — and neither can reach the data
+except through the whitelist between them.
 
 Deployment target: Railway or Fly.io (both handle FastAPI + Postgres simply).
 
@@ -1170,7 +1242,57 @@ unable to explain the system in an interview, flag it rather than proceeding.
 
 ---
 
-## 11. Future work
+## 11. Current limitations
+
+Stated plainly, because a system that reports what it cannot do is easier to
+trust about what it can.
+
+**Single business, local deployment.** One café, one Postgres, Docker Compose
+on one machine. There is no tenancy model, no authentication and no
+authorisation — every reader sees everything. Deploying this for a second
+business means a tenant key on every table and a login, neither of which is
+built.
+
+**One year of history.** Twelve reconciled monthly imports, 1 Sep 2025 to
+31 Aug 2026. That is enough to see a weekly cycle roughly fifty times over and
+to backtest a fortnight-ahead forecast; it is not enough to establish a
+year-on-year seasonal pattern, so nothing here claims one.
+
+**Single-turn AI questions.** Each question is answered from its own evidence
+with no memory of the last. There is no conversation state anywhere in the
+system, and the UI says so rather than implying otherwise.
+
+**A hosted LLM is a dependency and a running cost.** Answers require a
+third-party API, billed per token, reachable over the network. Every other page
+works without it, and `/analytics/ask` degrades to a 503 that explains itself —
+but the AI feature is the one part of this system that stops working when
+somebody else's service does.
+
+**No arbitrary SQL, by design.** The model chooses from twelve operations. A
+question outside them is reported unanswerable rather than answered loosely.
+This is the central security property, not a gap to be closed later: see §7b.
+
+**No prediction intervals.** The forecast returns point estimates and its
+measured historical error. Producing an interval would mean validating its
+coverage, which has not been done, and an unvalidated interval invites trust in
+a range nobody has checked.
+
+**No external features.** No weather, no local events, no holidays beyond a
+fixed-date flag, no competitor data. Each would need a second data source with
+its own reliability and backfill story, and none has been measured to help.
+
+**No pricing or margin recommendations.** The system records what was sold, not
+what it cost. Anything about profitability, elasticity or whether to promote an
+item needs cost data it does not hold — so it reports movement and association
+and stops there.
+
+**No autonomous actions.** Nothing in this system writes to Square, emails
+anyone, changes a price or schedules a job. It reads imported data and answers
+questions about it.
+
+---
+
+## 12. Future work
 
 - Direct Square API integration (replacing manual CSV export)
 - Authentication and multi-tenancy

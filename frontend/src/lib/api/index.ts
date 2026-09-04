@@ -10,6 +10,7 @@ export { buildQuery, withQuery } from "./query";
 export type { QueryParams, QueryValue } from "./query";
 export type { SquareImportFiles } from "./endpoints";
 export {
+  askQuestion,
   buildSquareImportBody,
   importSquareExport,
   getBasketPairs,

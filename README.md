@@ -46,6 +46,13 @@ no source file.
 supplied, imported net sales, line totals and unit counts must match it exactly
 or the import fails. It's an independent check on our arithmetic, not decoration.
 
+**Answers questions in plain English, from measured evidence.** Ask "how did we
+perform last month?" and the answer arrives with the analysis behind it. The
+language model never queries the database: it picks from twelve whitelisted
+operations, those run deterministically, and the resulting evidence is its
+entire factual input. A question the operations cannot answer is reported as
+unanswerable rather than answered loosely.
+
 **Forecasts the next fortnight, and reports how wrong it usually is.** A ridge
 regression on weekday, lag and holiday features predicts daily net sales,
 orders and units 1–14 days out. It is validated by rolling-origin backtesting
@@ -66,6 +73,27 @@ $ SELECT count(*) FROM information_schema.columns
 ---
 
 ## Architecture
+
+The whole system, end to end:
+
+```
+  Square exports  →  validated ingestion  →  canonical PostgreSQL model
+                  →  deterministic analytics
+                  →  product & basket intelligence
+                  →  predictive forecasting
+                  →  safe structured analytics executor   ← the AI boundary
+                  →  LLM planner
+                  →  deterministic evidence
+                  →  grounded AI answer
+                  →  Next.js AI analytics UI
+```
+
+Everything that touches the database is deterministic. The two generative steps
+sit at the ends — a question becomes a validated request, and measured evidence
+becomes a sentence — and neither can reach the data except through the closed
+operation whitelist between them.
+
+Ingestion in detail:
 
 ```
   Square exports (UTF-16, tab-delimited)
@@ -523,7 +551,7 @@ Result sizes are capped tighter than the public endpoints (50 ranked products,
 25 attachments, 24 of 168 weekday/hour cells) and every response reports what
 it withheld.
 
-## Ask a question in plain English (M7, in progress)
+## Ask a question in plain English
 
 `POST /analytics/ask` answers a natural-language question about trading —
 from measured evidence, with the evidence returned alongside the answer.
@@ -554,11 +582,20 @@ is carried in the prompt instead. That changes nothing about safety — the plan
 was always validated by Pydantic afterwards, which is where the whitelist,
 the four-step cap and every parameter bound are actually enforced.
 
-There is **no chat frontend yet**; that is Commit 26.
+The **Ask** page in the dashboard is the front end for this. Type a question or
+pick one of six worked examples, and the answer arrives with the analysis
+behind it — which operations ran, over what period, on how many records, and
+whether anything was truncated. Predictions are banner-marked from the
+evidence, not from the wording of the answer.
+
+Each question is answered on its own. There is no conversation memory anywhere
+in the system, and the page says so rather than rendering a transcript that
+would imply otherwise.
 
 ### Configuration
 
-The feature is optional. Set a key in `.env`:
+The feature is optional. Set a key in `.env` (gitignored — never in
+`.env.example`, never in code):
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
@@ -748,8 +785,8 @@ frontend/
   src/
     app/          App Router pages — one per dashboard section
     components/   shell, page furniture, one directory per dashboard
-    lib/          typed API client, formatting, date-range and forecast
-                  presentation rules (+ tests)
+    lib/          typed API client, formatting, date-range, forecast and
+                  ask presentation rules (+ tests)
 demo/square-sample/   synthetic Square exports (safe, committed)
 data/                 real exports go here — gitignored, never committed
 ```
@@ -771,29 +808,28 @@ promise is that a contributor installs nothing — but a CI runner already has a
 Node toolchain, and building an image to reach it would add minutes for no
 extra confidence.
 
-## Not built yet
-
-The natural-language interface is **in progress**. The backend can answer a
-question in English — see
-[Ask a question in plain English](#ask-a-question-in-plain-english-m7-in-progress).
-
-What does **not** exist yet: the chat frontend. The dashboard does not expose
-the feature, there is no conversation history and no streaming; a question is
-one HTTP request with no memory of the last. That is Commit 26.
-
-Also absent, and not planned: retrieval-augmented generation, embeddings, a
-vector database, web search and autonomous agents. None of them is needed to
-answer questions about a single café's own till data, and each would add a way
-for text nobody audited to influence an answer.
+## Limitations
 
 Every section of the dashboard is built and reads live data. There are no
-placeholder pages.
+placeholder pages. What follows is what the system deliberately does not do.
 
-The forecast is deliberately limited: no prediction intervals, no external
-features, no persisted model or scheduled retraining, and a 14-day ceiling.
-Those limits, and why each is there, are listed under
+| | |
+|---|---|
+| **Single business, local deployment** | One café, one database, Docker Compose on one machine. No tenancy, no authentication — every reader sees everything. |
+| **One year of history** | Twelve reconciled monthly imports. Enough to see the weekly cycle fifty times over; not enough to claim a year-on-year seasonal pattern. |
+| **Single-turn AI questions** | No conversation memory anywhere in the system. Each question is answered from its own evidence. |
+| **A hosted LLM is a dependency and a cost** | Answers need a third-party API, billed per token. Every other page works without it. |
+| **No arbitrary SQL, by design** | The model picks from twelve operations. A question outside them is reported unanswerable rather than answered loosely. This is the security property, not a gap. |
+| **No prediction intervals** | Point estimates plus measured historical error. An interval would need its coverage validated, which has not been done. |
+| **No external features** | No weather, local events, or competitor data in the forecast. |
+| **No pricing or margin advice** | The system records what was sold, not what it cost. |
+| **No autonomous actions** | It reads imported data and answers questions. It writes nothing back, emails no one, changes no price. |
+
+Also absent and not planned: retrieval-augmented generation, embeddings, a
+vector database and web search. None is needed to answer questions about a
+single café's own till data, and each would add a way for text nobody audited
+to influence an answer.
+
+The forecast's own limits — no persisted model, no scheduled retraining, a
+14-day ceiling — and why each is there, are under
 [Forecasting](#current-limitations).
-
-Deliberately absent, and not planned without the data to support them: product
-costs, margins, price recommendations and elasticity modelling. The system
-records what was sold, not what it cost.

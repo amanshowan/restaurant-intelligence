@@ -9,6 +9,7 @@
 import { apiFetch, type ApiFetchOptions } from "./client";
 import type { DateRange } from "../date-range";
 import type {
+  AskResponse,
   ChannelMixResponse,
   DayOfWeekResponse,
   ForecastResponse,
@@ -327,5 +328,33 @@ export function importSquareExport(
     ...options,
     method: "POST",
     body: buildSquareImportBody(files),
+  });
+}
+
+
+// --- natural-language questions ----------------------------------------------
+
+/**
+ * `POST /analytics/ask` — answer one question in plain English.
+ *
+ * Same-origin, like every other call: the browser posts to `/api/analytics/ask`
+ * and the Next.js rewrite forwards it to FastAPI. **The browser never talks to
+ * a model provider.** The API key lives only in the backend's environment, and
+ * no request from this file could reach Anthropic even if it wanted to.
+ *
+ * Deliberately single-turn. The endpoint has no conversation semantics — no
+ * thread id, no history parameter — so there is nothing here to carry a prior
+ * turn, and inventing one in the client would be faking a memory the system
+ * does not have.
+ *
+ * `Content-Type` is set explicitly here, unlike the multipart upload where the
+ * browser must generate it: this body is a JSON string with no boundary token.
+ */
+export function askQuestion(question: string, options?: ApiFetchOptions) {
+  return apiFetch<AskResponse>("/analytics/ask", {
+    ...options,
+    method: "POST",
+    body: JSON.stringify({ question }),
+    headers: { "Content-Type": "application/json" },
   });
 }

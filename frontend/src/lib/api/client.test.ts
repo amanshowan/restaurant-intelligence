@@ -210,3 +210,44 @@ describe("isBackendUnavailable", () => {
     expect(isBackendUnavailable(new Error("something else"))).toBe(false);
   });
 });
+
+describe("request headers", () => {
+  it("sends Accept and nothing else by default", async () => {
+    const spy = stubFetch(() => jsonResponse({}));
+
+    await apiFetch("/analytics/overview");
+
+    expect(spy.mock.calls[0][1]?.headers).toEqual({
+      Accept: "application/json",
+    });
+  });
+
+  it("does not set Content-Type for a FormData body", async () => {
+    // Load-bearing: the browser must generate it, because it carries the
+    // multipart boundary token.
+    const spy = stubFetch(() => jsonResponse({}));
+
+    await apiFetch("/imports/square", {
+      method: "POST",
+      body: new FormData(),
+    });
+
+    const headers = spy.mock.calls[0][1]?.headers as Record<string, string>;
+    expect(headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("merges caller headers over the defaults for a JSON post", async () => {
+    const spy = stubFetch(() => jsonResponse({}));
+
+    await apiFetch("/analytics/ask", {
+      method: "POST",
+      body: JSON.stringify({ question: "How did we do?" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(spy.mock.calls[0][1]?.headers).toEqual({
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    });
+  });
+});

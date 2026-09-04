@@ -537,6 +537,147 @@ export interface ImportSummary {
   reconciliation: ReconciliationResult;
 }
 
+// --- natural-language questions (M7) -----------------------------------------
+
+/**
+ * backend/app/nlq/evidence.py :: EvidenceKind
+ *
+ * Where a number came from. The distinction the UI must never blur is
+ * `forecast` against the other two: one is a record, the other is not.
+ */
+export type EvidenceKind = "measured" | "derived" | "forecast";
+
+/** backend/app/nlq/evidence.py :: EvidenceStatus */
+export type EvidenceStatus =
+  | "ok"
+  | "ambiguous_product"
+  | "unknown_product"
+  | "insufficient_history";
+
+/** backend/app/nlq/orchestrator.py :: AnswerStatus */
+export type AnswerStatus = "answered" | "unsupported" | "clarification_needed";
+
+/** backend/app/nlq/evidence.py :: Period */
+export interface EvidencePeriod {
+  start_date: string;
+  end_date: string;
+  days: number;
+}
+
+/** backend/app/nlq/evidence.py :: ResultLimits */
+export interface EvidenceLimits {
+  returned_rows: number;
+  applied_limit: number | null;
+  maximum_rows: number | null;
+  /** Rows that qualified before limiting. Null when not knowable. */
+  available_rows: number | null;
+  truncated: boolean;
+}
+
+/**
+ * backend/app/nlq/evidence.py :: ForecastProvenance
+ *
+ * Present ONLY on forecast evidence, and its presence is the signal that the
+ * bundle is prediction rather than record.
+ */
+export interface EvidenceForecast {
+  method: string;
+  /** Last day of OBSERVED data. Everything after it is predicted. */
+  trained_through: string;
+  forecast_start: string;
+  forecast_end: string;
+  horizon_days: number;
+  unit: string;
+  /**
+   * Measured error on unseen days under rolling-origin backtesting. NOT
+   * accuracy, NOT confidence, and not convertible into a percentage-correct
+   * figure — see `describeWape` in lib/ask.ts.
+   */
+  historical_wape_percent: number | null;
+  historical_mae: number | null;
+  backtest_folds: number;
+  backtest_horizon_days: number;
+}
+
+/** backend/app/nlq/evidence.py :: ResolvedProduct */
+export interface ResolvedProduct {
+  product_id: number;
+  name: string;
+  variation: string;
+  kind: string;
+}
+
+/** backend/app/nlq/evidence.py :: ProductResolutionEvidence */
+export interface ProductResolution {
+  requested_name: string | null;
+  requested_variation: string | null;
+  requested_product_id: number | null;
+  resolved: ResolvedProduct | null;
+  candidates: ResolvedProduct[];
+}
+
+/**
+ * backend/app/nlq/evidence.py :: EvidenceBundle
+ *
+ * `rows` and `totals` are deliberately typed as opaque records. They are the
+ * executor's own measurement shape, one per operation, and the UI summarises
+ * them rather than rendering them — a page that dumped this JSON would be
+ * showing internals, not evidence.
+ */
+export interface EvidenceBundle {
+  operation: string;
+  status: EvidenceStatus;
+  parameters: Record<string, unknown>;
+  period: EvidencePeriod | null;
+  comparison_period: EvidencePeriod | null;
+  rows: Record<string, unknown>[];
+  totals: Record<string, unknown>;
+  field_provenance: Record<string, EvidenceKind>;
+  units: Record<string, string>;
+  limits: EvidenceLimits | null;
+  forecast: EvidenceForecast | null;
+  product_resolution: ProductResolution | null;
+  warnings: string[];
+}
+
+/** backend/app/schemas/ask.py :: PlanStepResponse */
+export interface AskPlanStep {
+  operation: string;
+  /**
+   * The planner's stated reason. An audit note — it was never given to the
+   * answer stage and is not a finding.
+   */
+  purpose: string;
+  evidence_status: EvidenceStatus;
+}
+
+/** backend/app/schemas/ask.py :: TokenUsageResponse */
+export interface AskTokenUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+/** backend/app/schemas/ask.py :: AskResponse */
+export interface AskResponse {
+  question: string;
+  status: AnswerStatus;
+  /** Plain-English answer, generated only from `evidence`. */
+  answer: string;
+  steps: AskPlanStep[];
+  evidence: EvidenceBundle[];
+  /** Populated when `status` is "clarification_needed". */
+  candidates: ResolvedProduct[];
+  /**
+   * True when any bundle is a prediction. Derived from the EVIDENCE, not from
+   * the answer's wording — so the UI can mark a forecast even if the prose
+   * failed to.
+   */
+  contains_forecast: boolean;
+  warnings: string[];
+  model: string;
+  usage: AskTokenUsage | null;
+}
+
 /**
  * backend/app/api/errors.py — the single envelope EVERY failure arrives in,
  * including FastAPI's own 422 request validation.

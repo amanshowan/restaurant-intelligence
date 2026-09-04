@@ -128,6 +128,13 @@ export interface ApiFetchOptions {
    * set `Content-Type` itself — see the note in `apiFetch`.
    */
   body?: BodyInit;
+  /**
+   * Extra request headers, merged over the defaults.
+   *
+   * Needed for JSON posts, which must declare `Content-Type: application/json`.
+   * Do NOT set `Content-Type` for a `FormData` body — see `apiFetch`.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -150,12 +157,18 @@ export async function apiFetch<T>(
       method: options.method ?? "GET",
       body: options.body,
       signal: options.signal,
-      // ONLY Accept. Content-Type is deliberately never set here: for a
-      // multipart upload the browser must generate it, because it carries the
-      // boundary token that separates the parts. Setting
-      // "multipart/form-data" by hand omits the boundary, and the server then
+      // `Accept` always; `Content-Type` only when a caller asks for it.
+      //
+      // The default omits Content-Type deliberately, and that default must
+      // survive: for a multipart upload the BROWSER has to generate it,
+      // because it carries the boundary token separating the parts. Setting
+      // "multipart/form-data" by hand omits the boundary and the server then
       // fails to parse a body that looks perfectly valid on the wire.
-      headers: { Accept: "application/json" },
+      //
+      // A JSON post is the opposite case — a string body with no boundary,
+      // which FastAPI will reject without the header — so those callers pass
+      // it explicitly rather than it being applied to everything.
+      headers: { Accept: "application/json", ...options.headers },
       // The dashboard reads live figures; a cached response would show stale
       // takings after an import with no indication that it had.
       cache: "no-store",
