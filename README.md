@@ -241,6 +241,70 @@ should stop traffic being routed to a container, not trigger a restart loop.
 
 ---
 
+## The public demo dataset — a full synthetic year
+
+The three-day sample above shows the importer working. To see every page of the
+dashboard doing something worth looking at — a weekly rhythm, products rising
+and falling, baskets that genuinely go together, a forecast with enough history
+to backtest — generate a full synthetic trading year.
+
+**The Copper Kettle does not exist.** Every product, price, volume and pattern
+in it is invented. No name, figure or trading behaviour is taken from any real
+business, and Square's PII columns are written empty on purpose.
+
+### Regenerate and load
+
+```bash
+docker compose exec api python scripts/generate_public_demo.py
+```
+
+```bash
+docker compose exec api python scripts/load_public_demo.py --reset
+```
+
+The first writes 36 files (12 monthly batches × 3 exports) to
+`backend/data/public-demo/`, which is gitignored — the generator is committed,
+its 34 MB of output is not. The second loads them **through the real importer**,
+one logical import per month, and prints each month's reconciliation.
+
+The seed is fixed (`424242`), so regenerating produces byte-identical files.
+That matters when screenshots, documentation and a forecast's measured error
+all refer to the same dataset.
+
+### It will not touch your real data
+
+`load_public_demo.py` writes to a database whose name must end in `_demo`
+(`restaurant_intelligence_demo` by default, created on first run). It refuses
+anything else, and refuses a target identical to `DATABASE_URL`:
+
+```
+REFUSED: refusing to load demo data into database 'restaurant_intelligence':
+the name must end with '_demo'.
+```
+
+Point the API at it with `DATABASE_URL=…/restaurant_intelligence_demo` to browse
+the demo year in the dashboard.
+
+### What the year contains
+
+| | |
+|---|---|
+| Period | 1 Sep 2025 – 31 Aug 2026, 365 days |
+| Volume | 25,122 paid orders · 38,106 item lines · 39,559 net units |
+| Net sales | £211,426.80 |
+| Catalogue | 34 variations — 32 menu items, one gift voucher, one open-price line |
+| Channels | in-store, collection, delivery, online and mixed |
+| Refunds | 35, each a full reversal against its original payment |
+| Closed days | 25–26 December and 1 January, as explicit zero-trade days |
+
+Deliberately encoded so the analytics have something to find: strong basket
+pairs (soup with sourdough, breakfast with coffee, sandwich with fries), four
+products in clear decline and four in clear growth, one product introduced in
+month four and one withdrawn in month nine, and a weekend-heavy weekly cycle
+with breakfast and lunch peaks.
+
+---
+
 ## Try it: import the synthetic dataset
 
 The repository ships a small **fake** Square export set in
@@ -788,7 +852,8 @@ frontend/
     lib/          typed API client, formatting, date-range, forecast and
                   ask presentation rules (+ tests)
 demo/square-sample/   synthetic Square exports (safe, committed)
-data/                 real exports go here — gitignored, never committed
+backend/scripts/      demo-data generator and loader (committed; output is not)
+data/                 real exports and generated demo years — gitignored
 ```
 
 ## Continuous integration

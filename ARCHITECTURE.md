@@ -1158,7 +1158,7 @@ restaurant-intelligence/
 │   │   │   │                     #     prompts, orchestrator
 │   │   │   └── providers/        # the only modules importing a vendor SDK
 │   │   └── api/                  # route handlers
-│   ├── scripts/seed.py
+│   ├── scripts/                  # demo-data generator and loader
 │   └── tests/
 └── frontend/
     └── src/
@@ -1246,6 +1246,15 @@ unable to explain the system in an interview, flag it rather than proceeding.
 
 Stated plainly, because a system that reports what it cannot do is easier to
 trust about what it can.
+
+**The demo dataset is not the development dataset.** The project was built
+against one real business's twelve monthly Square exports, which are gitignored
+and never committed. `backend/scripts/generate_public_demo.py` produces a
+fictional replacement — a full synthetic year for The Copper Kettle — from a
+fixed seed, and `load_public_demo.py` imports it through the real importer into
+a database whose name must end `_demo`. Neither script can write to the
+development database, and the generated exports are gitignored: the generator
+is the committed artefact, not its 34 MB of output.
 
 **Single business, local deployment.** One café, one Postgres, Docker Compose
 on one machine. There is no tenancy model, no authentication and no
